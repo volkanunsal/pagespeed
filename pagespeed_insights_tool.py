@@ -468,6 +468,31 @@ def load_urls(
     return validated
 
 
+def _looks_like_sitemap(source: str) -> bool:
+    """Heuristic to detect whether a source string is a sitemap rather than a plain URL."""
+    lower = source.lower()
+
+    # URL/filename ending in .xml or .xml.gz
+    if lower.endswith(".xml") or lower.endswith(".xml.gz"):
+        return True
+
+    # URL containing "sitemap" anywhere (e.g. /sitemap_index.xml, /sitemap)
+    if "sitemap" in lower:
+        return True
+
+    # Local file: peek at content
+    path = Path(source)
+    if path.is_file():
+        try:
+            head = path.read_text(errors="ignore")[:512]
+            if head.lstrip().startswith("<?xml") or "<urlset" in head or "<sitemapindex" in head:
+                return True
+        except OSError:
+            pass
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # API Client
 # ---------------------------------------------------------------------------
