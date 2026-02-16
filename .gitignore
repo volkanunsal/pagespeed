@@ -180,3 +180,4 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.claude/settings.local.json
