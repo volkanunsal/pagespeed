@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Single-file Python CLI tool (`pagespeed_insights_tool.py`) that batch-queries Google's PageSpeed Insights API v5 and outputs CSV/JSON/HTML reports. Published to PyPI as `pagespeed-insights` and also supports PEP 723 inline script metadata for direct `uv run` usage.
+Single-file Python CLI tool (`pagespeed_insights_tool.py`) that batch-queries Google's PageSpeed Insights API v5 and outputs CSV/JSON/HTML reports. Published to PyPI as `pagespeed` and also supports PEP 723 inline script metadata for direct `uv run` usage.
 
 ## Running the Tool
 
-When installed via `pip install pagespeed-insights` or run via `uvx pagespeed-insights`:
+When installed via `pip install pagespeed` or run via `uvx pagespeed`:
 
 ```bash
 pagespeed --help
@@ -119,7 +119,7 @@ Optional `pagespeed.toml` discovered in CWD or `~/.config/pagespeed/config.toml`
 
 ## Distribution
 
-- **PyPI package**: `pagespeed-insights` — installs a `pagespeed` console script
+- **PyPI package**: `pagespeed` — installs a `pagespeed` console script
 - **Console script entry point**: `pagespeed` → `pagespeed_insights_tool:main`
 - **Dual-mode compatibility**: The tool works both as an installed package (`pagespeed` command) and as a PEP 723 script (`uv run pagespeed_insights_tool.py`). The `# /// script` block at the top is ignored by hatchling but enables direct `uv run` usage.
 - **Dependency sync**: Dependencies are declared in two places — `pyproject.toml` `[project.dependencies]` and the PEP 723 `# /// script` block. Both must be kept in sync when adding/removing dependencies.

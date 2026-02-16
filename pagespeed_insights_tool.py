@@ -34,7 +34,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 # ---------------------------------------------------------------------------
 # Constants

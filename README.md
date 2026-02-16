@@ -7,13 +7,13 @@ A command-line tool that automates Google PageSpeed Insights analysis across mul
 ### Run instantly with `uvx` (recommended, no install needed)
 
 ```bash
-uvx pagespeed-insights quick-check https://example.com
+uvx pagespeed quick-check https://example.com
 ```
 
 ### Install with `pip` or `pipx`
 
 ```bash
-pip install pagespeed-insights
+pip install pagespeed
 pagespeed quick-check https://example.com
 ```
 

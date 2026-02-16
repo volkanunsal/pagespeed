@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pagespeed-insights"
+name = "pagespeed"
 dynamic = ["version"]
 description = "CLI tool for batch Google PageSpeed Insights analysis with CSV/JSON/HTML reports"
 readme = "README.md"
