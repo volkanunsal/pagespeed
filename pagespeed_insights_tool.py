@@ -689,6 +689,53 @@ def generate_output_path(output_dir: str, strategy: str, extension: str) -> Path
     return dir_path / f"{timestamp}-{strategy}.{extension}"
 
 
+def _write_data_files(
+    dataframe: pd.DataFrame,
+    output_format: str,
+    output_dir: str,
+    explicit_output: str | None,
+    strategy_label: str,
+) -> list[str]:
+    """Write CSV and/or JSON data files based on output_format. Returns list of written paths."""
+    written_files: list[str] = []
+
+    if output_format in ("csv", "both"):
+        if explicit_output:
+            csv_path = Path(explicit_output).with_suffix(".csv")
+        else:
+            csv_path = generate_output_path(output_dir, strategy_label, "csv")
+        written_files.append(output_csv(dataframe, csv_path))
+
+    if output_format in ("json", "both"):
+        if explicit_output:
+            json_path = Path(explicit_output).with_suffix(".json")
+        else:
+            json_path = generate_output_path(output_dir, strategy_label, "json")
+        written_files.append(output_json(dataframe, json_path))
+
+    print(f"\nResults written to:", file=sys.stderr)
+    for filepath in written_files:
+        print(f"  {filepath}", file=sys.stderr)
+
+    return written_files
+
+
+def _print_audit_summary(dataframe: pd.DataFrame) -> None:
+    """Print average/min/max scores and error count to stderr."""
+    if "performance_score" in dataframe.columns:
+        scores = dataframe["performance_score"].dropna()
+        if len(scores) > 0:
+            print(f"\nSummary:", file=sys.stderr)
+            print(f"  URLs analyzed: {len(dataframe['url'].unique())}", file=sys.stderr)
+            print(f"  Avg score:     {scores.mean():.0f}", file=sys.stderr)
+            print(f"  Min score:     {scores.min():.0f}", file=sys.stderr)
+            print(f"  Max score:     {scores.max():.0f}", file=sys.stderr)
+
+    errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
+    if len(errors) > 0:
+        print(f"  Errors:        {len(errors)}", file=sys.stderr)
+
+
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
     """Write DataFrame to CSV. Returns the file path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -935,41 +982,8 @@ def cmd_audit(args: argparse.Namespace) -> None:
     output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
     explicit_output = getattr(args, "output", None)
 
-    written_files = []
-
-    if output_format in ("csv", "both"):
-        if explicit_output:
-            csv_path = Path(explicit_output).with_suffix(".csv")
-        else:
-            csv_path = generate_output_path(output_dir, strategy_label, "csv")
-        path_str = output_csv(dataframe, csv_path)
-        written_files.append(path_str)
-
-    if output_format in ("json", "both"):
-        if explicit_output:
-            json_path = Path(explicit_output).with_suffix(".json")
-        else:
-            json_path = generate_output_path(output_dir, strategy_label, "json")
-        path_str = output_json(dataframe, json_path)
-        written_files.append(path_str)
-
-    print(f"\nResults written to:", file=sys.stderr)
-    for filepath in written_files:
-        print(f"  {filepath}", file=sys.stderr)
-
-    # Print summary
-    if "performance_score" in dataframe.columns:
-        scores = dataframe["performance_score"].dropna()
-        if len(scores) > 0:
-            print(f"\nSummary:", file=sys.stderr)
-            print(f"  URLs analyzed: {len(dataframe['url'].unique())}", file=sys.stderr)
-            print(f"  Avg score:     {scores.mean():.0f}", file=sys.stderr)
-            print(f"  Min score:     {scores.min():.0f}", file=sys.stderr)
-            print(f"  Max score:     {scores.max():.0f}", file=sys.stderr)
-
-    errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
-    if len(errors) > 0:
-        print(f"  Errors:        {len(errors)}", file=sys.stderr)
+    _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
+    _print_audit_summary(dataframe)
 
 
 # ---------------------------------------------------------------------------
