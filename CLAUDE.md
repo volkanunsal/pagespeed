@@ -14,6 +14,7 @@ All commands use `uv run` which auto-manages the virtualenv and dependencies:
 uv run pagespeed_insights_tool.py --help
 uv run pagespeed_insights_tool.py quick-check https://example.com
 uv run pagespeed_insights_tool.py audit -f urls.txt --strategy both --output-format both
+uv run pagespeed_insights_tool.py pipeline https://example.com/sitemap.xml --sitemap-limit 20 --open
 uv run pagespeed_insights_tool.py compare before.csv after.csv
 uv run pagespeed_insights_tool.py report results.csv --open
 ```
@@ -31,7 +32,7 @@ Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in orde
 5. **Metrics Extraction** — `extract_metrics()` walks the API response using the `LAB_METRICS`/`FIELD_METRICS` lists. Returns a flat dict per (url, strategy) pair.
 6. **Batch Processing** — `process_urls()` uses `ThreadPoolExecutor` + `threading.Semaphore(1)` for rate-limited concurrency.
 7. **Output Formatters** — `output_csv()`, `output_json()`, `generate_html_report()`. JSON wraps results in a metadata envelope.
-8. **Subcommand Handlers** — `cmd_quick_check()`, `cmd_audit()`, `cmd_compare()`, `cmd_report()`, `cmd_run()`.
+8. **Subcommand Handlers** — `cmd_quick_check()`, `cmd_audit()`, `cmd_compare()`, `cmd_report()`, `cmd_run()`, `cmd_pipeline()`.
 
 ## Key Design Patterns
 
