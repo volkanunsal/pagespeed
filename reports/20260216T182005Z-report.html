@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PageSpeed Insights Report - 2026-02-16 18:20:05 UTC</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 20px; max-width: 1400px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 5px; }
+    h2 { font-size: 1.2rem; margin: 30px 0 15px; color: #555; }
+    .meta { color: #888; font-size: 0.85rem; margin-bottom: 25px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }
+    .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }
+    .card .value { font-size: 2rem; font-weight: 700; }
+    .card .label { font-size: 0.8rem; color: #888; margin-top: 5px; }
+    .card .value.good { color: #0cce6b; }
+    .card .value.needs-work { color: #ffa400; }
+    .card .value.poor { color: #ff4e42; }
+    .data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    .data-table th { background: #f8f9fa; padding: 10px 12px; text-align: left; font-size: 0.8rem; text-transform: uppercase; color: #666; cursor: pointer; user-select: none; white-space: nowrap; }
+    .data-table th:hover { background: #e9ecef; }
+    .data-table td { padding: 10px 12px; border-top: 1px solid #eee; font-size: 0.9rem; }
+    .url-cell { max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .score-cell { font-weight: 700; text-align: center; min-width: 60px; }
+    .score-cell.good { color: #0cce6b; }
+    .score-cell.needs-work { color: #ffa400; }
+    .score-cell.poor { color: #ff4e42; }
+    .score-cell.na { color: #999; }
+    .cwv-good { color: #0cce6b; font-weight: 600; }
+    .cwv-needs-work { color: #ffa400; font-weight: 600; }
+    .cwv-poor { color: #ff4e42; font-weight: 600; }
+    .cwv-na { color: #999; }
+    .field-fast { color: #0cce6b; }
+    .field-average { color: #ffa400; }
+    .field-slow { color: #ff4e42; }
+    .field-na { color: #999; }
+    .error-cell { color: #ff4e42; font-style: italic; }
+    .bar-row { display: flex; align-items: center; margin-bottom: 8px; }
+    .bar-label { width: 300px; min-width: 200px; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 10px; }
+    .bar-track { flex: 1; background: #eee; border-radius: 4px; height: 24px; position: relative; }
+    .bar-fill { height: 100%; border-radius: 4px; color: #fff; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; min-width: 30px; transition: width 0.3s; }
+    .chart-container { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    .legend { display: flex; gap: 20px; margin-top: 15px; font-size: 0.8rem; }
+    .legend-item { display: flex; align-items: center; gap: 5px; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
+    footer { margin-top: 40px; padding-top: 15px; border-top: 1px solid #ddd; color: #999; font-size: 0.75rem; text-align: center; }
+</style>
+</head>
+<body>
+<h1>PageSpeed Insights Report</h1>
+<p class="meta">Generated: 2026-02-16 18:20:05 UTC | Tool v1.0.0</p>
+
+<div class="cards">
+    <div class="card"><div class="value">1</div><div class="label">URLs Analyzed</div></div>
+    <div class="card"><div class="value poor">0</div><div class="label">Average Score</div></div>
+    <div class="card"><div class="value poor">0</div><div class="label">Best Score</div></div>
+    <div class="card"><div class="value poor">0</div><div class="label">Worst Score</div></div>
+    <div class='card'><div class='value poor'>1</div><div class='label'>Errors</div></div>
+</div>
+
+<h2>Performance Scores</h2>
+<div class="chart-container">
+    
+    <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background: #0cce6b;"></div> Good (90-100)</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #ffa400;"></div> Needs Work (50-89)</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #ff4e42;"></div> Poor (0-49)</div>
+    </div>
+</div>
+
+<h2>Detailed Results</h2>
+<table class="data-table sortable" id="results-table">
+    <thead>
+        <tr>
+            <th onclick="sortTable('results-table', 0)">URL</th>
+            <th onclick="sortTable('results-table', 1)">Strategy</th>
+            <th onclick="sortTable('results-table', 2)">Score</th>
+            <th onclick="sortTable('results-table', 3)">LCP</th>
+            <th onclick="sortTable('results-table', 4)">CLS</th>
+            <th onclick="sortTable('results-table', 5)">TBT</th>
+            <th onclick="sortTable('results-table', 6)">FCP</th>
+            <th onclick="sortTable('results-table', 7)">SI</th>
+            <th onclick="sortTable('results-table', 8)">TTI</th>
+        </tr>
+    </thead>
+    <tbody>
+        
+            <tr>
+                <td class="url-cell" title="https://example.com">https://example.com</td>
+                <td>mobile</td>
+                <td colspan="8" class="error-cell">Error: HTTP 429 for https://example.com (mobile): Quota exceeded for quota metric 'Queries' and limit 'Queries per day' of service 'pagespeedonline.googleapis.com' for consumer 'project_number:583797351490'.</td>
+            </tr>
+    </tbody>
+</table>
+
+
+
+<footer>
+    Generated by PageSpeed Insights Batch Analysis Tool v1.0.0
+</footer>
+
+<script>
+function sortTable(tableId, colIdx) {
+    const table = document.getElementById(tableId);
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const header = table.querySelectorAll('th')[colIdx];
+    const ascending = header.dataset.sort !== 'asc';
+    header.dataset.sort = ascending ? 'asc' : 'desc';
+
+    rows.sort((a, b) => {
+        const aText = a.cells[colIdx] ? a.cells[colIdx].textContent.trim() : '';
+        const bText = b.cells[colIdx] ? b.cells[colIdx].textContent.trim() : '';
+        const aNum = parseFloat(aText.replace(/[^\d.-]/g, ''));
+        const bNum = parseFloat(bText.replace(/[^\d.-]/g, ''));
+        if (!isNaN(aNum) && !isNaN(bNum)) {
+            return ascending ? aNum - bNum : bNum - aNum;
+        }
+        return ascending ? aText.localeCompare(bText) : bText.localeCompare(aText);
+    });
+
+    rows.forEach(row => tbody.appendChild(row));
+}
+</script>
+</body>
+</html>

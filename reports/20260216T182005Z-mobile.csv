@@ -1,0 +1,2 @@
+url,strategy,error
+https://example.com,mobile,HTTP 429 for https://example.com (mobile): Quota exceeded for quota metric 'Queries' and limit 'Queries per day' of service 'pagespeedonline.googleapis.com' for consumer 'project_number:583797351490'.
