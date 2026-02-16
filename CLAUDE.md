@@ -19,6 +19,8 @@ pagespeed compare before.csv after.csv
 pagespeed report results.csv --open
 pagespeed pipeline https://example.com --budget cwv
 pagespeed budget results.csv --budget budget.toml
+pagespeed quick-check https://example.com --runs 3
+pagespeed audit -f urls.txt --runs 5 --strategy both
 ```
 
 For local development, `uv run` still works via PEP 723 inline metadata:
@@ -36,7 +38,8 @@ Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in orde
 3. **Config/Profile** — `load_config()` reads TOML, `apply_profile()` merges with CLI args. Resolution: CLI flags > profile > settings > built-in defaults. `TrackingAction` tracks which argparse flags were explicitly set.
 4. **API Client** — `fetch_pagespeed_result()` with retry logic (exponential backoff on 429/500/503). Single function, returns raw API JSON.
 5. **Metrics Extraction** — `extract_metrics()` walks the API response using the `LAB_METRICS`/`FIELD_METRICS` lists. Returns a flat dict per (url, strategy) pair.
-6. **Batch Processing** — `process_urls()` uses `ThreadPoolExecutor` + `threading.Semaphore(1)` for rate-limited concurrency.
+6. **Batch Processing** — `process_urls()` uses `ThreadPoolExecutor` + `threading.Semaphore(1)` for rate-limited concurrency. Supports multi-run via `--runs N`.
+6b. **Multi-Run Aggregation** — `aggregate_multi_run()` groups by (url, strategy), computes median for numeric columns, mode for categories. `MEDIAN_ELIGIBLE_COLUMNS` controls which columns get aggregated.
 7. **Output Formatters** — `output_csv()`, `output_json()`, `generate_html_report()`. JSON wraps results in a metadata envelope.
 8. **Budget Evaluation** — `load_budget()`, `evaluate_budget()`, CI output formatters (`format_budget_text/json/github`), `send_budget_webhook()`, `_apply_budget()` orchestration. Exit code 2 on budget failure.
 9. **Subcommand Handlers** — `cmd_quick_check()`, `cmd_audit()`, `cmd_compare()`, `cmd_report()`, `cmd_run()`, `cmd_pipeline()`, `cmd_budget()`.
@@ -47,6 +50,7 @@ Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in orde
 - **Config merging via TrackingAction**: Custom argparse actions record which flags were explicitly set on CLI, so `apply_profile()` only fills in unset values from config/profile.
 - **Rate limiting**: Even with N workers, a shared `Semaphore(1)` + delay timer serializes actual API calls. Workers prepare results in parallel but HTTP requests are sequential.
 - **Auto-timestamped output**: Files named `{YYYYMMDD}T{HHMMSS}Z-{strategy}.{ext}` — safe for cron, never overwrites.
+- **Multi-run median scoring**: `--runs N` runs each URL N times with interleaved ordering (run 1 all URLs, run 2 all URLs, etc.) and computes median values. Adds `runs_completed`, `score_range`, `score_stddev` metadata columns when N > 1.
 
 ## API Key
 
