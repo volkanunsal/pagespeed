@@ -916,6 +916,71 @@ def evaluate_budget(dataframe: pd.DataFrame, budget: dict) -> dict:
     }
 
 
+def format_budget_text(verdict: dict) -> str:
+    """Format budget verdict as human-readable text for terminal output."""
+    budget_name = verdict["budget_name"]
+    overall = verdict["verdict"].upper()
+    passed = verdict["passed"]
+    failed = verdict["failed"]
+    total = verdict["total"]
+    errors_skipped = verdict["errors_skipped"]
+
+    lines = [
+        f"Budget: {budget_name}",
+        f"Result: {overall} ({passed} passed, {failed} failed, {total} total, {errors_skipped} skipped)",
+        "",
+    ]
+
+    for result in verdict["results"]:
+        url = result["url"]
+        strategy = result["strategy"]
+        row_verdict = result["verdict"].upper()
+        lines.append(f"{row_verdict}  {url} ({strategy})")
+        for violation in result["violations"]:
+            metric = violation["metric"]
+            actual = violation["actual"]
+            threshold = violation["threshold"]
+            operator = violation["operator"]
+            lines.append(f"      {metric}: {actual} (threshold: {operator} {threshold})")
+
+    return "\n".join(lines)
+
+
+def format_budget_json(verdict: dict) -> str:
+    """Format budget verdict as JSON."""
+    return json.dumps(verdict, indent=2, default=str)
+
+
+def format_budget_github(verdict: dict) -> str:
+    """Format budget verdict as GitHub Actions annotations."""
+    lines = []
+    for result in verdict["results"]:
+        if result["verdict"] == "fail":
+            url = result["url"]
+            strategy = result["strategy"]
+            for violation in result["violations"]:
+                metric = violation["metric"]
+                actual = violation["actual"]
+                operator = violation["operator"]
+                threshold = violation["threshold"]
+                lines.append(
+                    f"::error::Budget FAIL: {url} ({strategy}) "
+                    f"— {metric}={actual} ({operator} {threshold})"
+                )
+    if not lines and verdict["verdict"] == "pass":
+        lines.append(f"::notice::Budget PASS: {verdict['budget_name']}")
+    return "\n".join(lines)
+
+
+def send_budget_webhook(webhook_url: str, verdict: dict) -> None:
+    """POST budget verdict to a webhook URL. Failures are warnings only."""
+    try:
+        response = requests.post(webhook_url, json=verdict, timeout=30)
+        response.raise_for_status()
+    except (requests.RequestException, OSError) as exc:
+        print(f"Warning: webhook delivery failed: {exc}", file=sys.stderr)
+
+
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
     """Write DataFrame to CSV. Returns the file path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
