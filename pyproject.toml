@@ -13,7 +13,6 @@ keywords = ["pagespeed", "lighthouse", "performance", "web-vitals", "core-web-vi
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
