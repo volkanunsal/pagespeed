@@ -98,6 +98,27 @@ SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 SITEMAP_FETCH_TIMEOUT = 30
 MAX_SITEMAP_DEPTH = 3
 
+# Budget evaluation constants
+BUDGET_EXIT_CODE = 2
+
+BUDGET_METRIC_MAP = {
+    "min_performance_score":   ("performance_score",   ">="),
+    "min_accessibility_score": ("accessibility_score", ">="),
+    "min_best_practices_score": ("best_practices_score", ">="),
+    "min_seo_score":           ("seo_score",           ">="),
+    "max_lcp_ms":              ("lab_lcp_ms",          "<="),
+    "max_cls":                 ("lab_cls",             "<="),
+    "max_tbt_ms":              ("lab_tbt_ms",          "<="),
+    "max_fcp_ms":              ("lab_fcp_ms",          "<="),
+}
+
+CWV_BUDGET_PRESET = {
+    "max_lcp_ms": CWV_THRESHOLDS["lab_lcp_ms"]["good"],
+    "max_cls":    CWV_THRESHOLDS["lab_cls"]["good"],
+    "max_tbt_ms": CWV_THRESHOLDS["lab_tbt_ms"]["good"],
+    "max_fcp_ms": CWV_THRESHOLDS["lab_fcp_ms"]["good"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -136,6 +157,32 @@ def load_config(config_path: Path | None) -> dict:
     except OSError as exc:
         print(f"Error: cannot read config file {config_path}: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def load_budget(budget_source: str) -> dict:
+    """Load a performance budget from a TOML file or built-in preset.
+
+    If budget_source is "cwv", returns the Core Web Vitals preset.
+    Otherwise, reads and parses a TOML file.
+    """
+    if budget_source == "cwv":
+        return {"thresholds": CWV_BUDGET_PRESET, "meta": {"name": "Core Web Vitals"}}
+
+    budget_path = Path(budget_source)
+    if not budget_path.is_file():
+        print(f"Error: budget file not found: {budget_source}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open(budget_path, "rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        print(f"Error: malformed budget file {budget_source}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    return {
+        "thresholds": data.get("thresholds", {}),
+        "meta": data.get("meta", {}),
+    }
 
 
 def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | None) -> argparse.Namespace:
@@ -776,6 +823,97 @@ def _print_audit_summary(dataframe: pd.DataFrame) -> None:
     errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
     if len(errors) > 0:
         print(f"  Errors:        {len(errors)}", file=sys.stderr)
+
+
+def evaluate_budget(dataframe: pd.DataFrame, budget: dict) -> dict:
+    """Evaluate a DataFrame of results against a performance budget.
+
+    Returns a verdict dict with per-URL results and overall pass/fail status.
+    """
+    thresholds = budget.get("thresholds", {})
+    budget_name = budget.get("meta", {}).get("name", "Performance budget")
+
+    # Filter to non-error rows
+    if "error" in dataframe.columns:
+        valid_rows = dataframe[dataframe["error"].isna() | (dataframe["error"] == "")]
+        error_count = len(dataframe) - len(valid_rows)
+    else:
+        valid_rows = dataframe
+        error_count = 0
+
+    if len(valid_rows) == 0:
+        return {
+            "budget_name": budget_name,
+            "verdict": "error",
+            "passed": 0,
+            "failed": 0,
+            "total": 0,
+            "errors_skipped": error_count,
+            "results": [],
+        }
+
+    if not thresholds:
+        print("Warning: budget has no thresholds defined — all URLs pass by default", file=sys.stderr)
+
+    results = []
+    passed_count = 0
+    failed_count = 0
+
+    for _, row in valid_rows.iterrows():
+        url = row.get("url", "")
+        strategy = row.get("strategy", "")
+        violations = []
+
+        for budget_key, (column_name, operator) in BUDGET_METRIC_MAP.items():
+            if budget_key not in thresholds:
+                continue
+            if column_name not in dataframe.columns:
+                continue
+            actual = row.get(column_name)
+            if actual is None or (isinstance(actual, float) and math.isnan(actual)):
+                continue
+
+            threshold_value = thresholds[budget_key]
+            if operator == ">=" and actual < threshold_value:
+                violations.append({
+                    "metric": column_name,
+                    "actual": actual,
+                    "threshold": threshold_value,
+                    "operator": operator,
+                })
+            elif operator == "<=" and actual > threshold_value:
+                violations.append({
+                    "metric": column_name,
+                    "actual": actual,
+                    "threshold": threshold_value,
+                    "operator": operator,
+                })
+
+        row_verdict = "fail" if violations else "pass"
+        if row_verdict == "pass":
+            passed_count += 1
+        else:
+            failed_count += 1
+
+        results.append({
+            "url": url,
+            "strategy": strategy,
+            "verdict": row_verdict,
+            "violations": violations,
+        })
+
+    overall_verdict = "fail" if failed_count > 0 else "pass"
+    total = passed_count + failed_count
+
+    return {
+        "budget_name": budget_name,
+        "verdict": overall_verdict,
+        "passed": passed_count,
+        "failed": failed_count,
+        "total": total,
+        "errors_skipped": error_count,
+        "results": results,
+    }
 
 
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
