@@ -2,29 +2,38 @@
 
 A command-line tool that automates Google PageSpeed Insights analysis across multiple URLs, extracting performance metrics (lab + field data) into structured CSV, JSON, and HTML reports.
 
-## Quickstart
+## Installation
 
-1. **Install uv** (if not already installed):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
+### Run instantly with `uvx` (recommended, no install needed)
 
-2. **Run a quick check** (no setup needed):
-   ```bash
-   uv run pagespeed_insights_tool.py quick-check https://example.com
-   ```
+```bash
+uvx pagespeed-insights quick-check https://example.com
+```
 
-3. **(Optional) Set an API key** for higher rate limits:
-   ```bash
-   export PAGESPEED_API_KEY=your_key_here
-   ```
+### Install with `pip` or `pipx`
 
-That's it — `uv` handles Python, dependencies, and virtual environments automatically.
+```bash
+pip install pagespeed-insights
+pagespeed quick-check https://example.com
+```
+
+### Run from URL (just needs `uv`)
+
+```bash
+uv run https://raw.githubusercontent.com/volkanunsal/pagespeed/main/pagespeed_insights_tool.py quick-check https://example.com
+```
+
+### Development
+
+```bash
+git clone https://github.com/volkanunsal/pagespeed.git
+cd pagespeed
+uv run pagespeed_insights_tool.py quick-check https://example.com
+```
 
 ## Prerequisites
 
-- **Python 3.13+** (managed by `uv`)
-- **uv 0.9+** — [install from astral.sh](https://astral.sh/uv)
+- **Python 3.13+**
 - **Google API key** (optional) — without one, you're limited to ~25 queries/day; with one, ~25,000/day
 
 ## Getting an API Key
@@ -49,13 +58,13 @@ Prints a formatted report to the terminal. No files written.
 
 ```bash
 # Mobile only (default)
-uv run pagespeed_insights_tool.py quick-check https://www.google.com
+pagespeed quick-check https://www.google.com
 
 # Both mobile and desktop
-uv run pagespeed_insights_tool.py quick-check https://www.google.com --strategy both
+pagespeed quick-check https://www.google.com --strategy both
 
 # With specific categories
-uv run pagespeed_insights_tool.py quick-check https://www.google.com --categories performance accessibility
+pagespeed quick-check https://www.google.com --categories performance accessibility
 ```
 
 Sample output:
@@ -82,19 +91,19 @@ Analyzes multiple URLs and writes CSV/JSON reports.
 
 ```bash
 # From a file of URLs
-uv run pagespeed_insights_tool.py audit -f urls.txt
+pagespeed audit -f urls.txt
 
 # Multiple strategies and output formats
-uv run pagespeed_insights_tool.py audit -f urls.txt --strategy both --output-format both
+pagespeed audit -f urls.txt --strategy both --output-format both
 
 # Inline URLs with custom output path
-uv run pagespeed_insights_tool.py audit https://a.com https://b.com -o report
+pagespeed audit https://a.com https://b.com -o report
 
 # With a named profile
-uv run pagespeed_insights_tool.py audit -f urls.txt --profile full
+pagespeed audit -f urls.txt --profile full
 
 # Piped input
-cat urls.txt | uv run pagespeed_insights_tool.py audit
+cat urls.txt | pagespeed audit
 ```
 
 The URL file is one URL per line. Lines starting with `#` are comments:
@@ -112,10 +121,10 @@ Loads two previous report files and shows per-URL score changes.
 
 ```bash
 # Compare before and after
-uv run pagespeed_insights_tool.py compare before.csv after.csv
+pagespeed compare before.csv after.csv
 
 # Custom threshold (flag changes >= 10%)
-uv run pagespeed_insights_tool.py compare --threshold 10 old.json new.json
+pagespeed compare --threshold 10 old.json new.json
 ```
 
 Output flags regressions with `!!` and improvements with `++`.
@@ -126,13 +135,13 @@ Creates a self-contained HTML report from a results file.
 
 ```bash
 # Generate HTML from CSV results
-uv run pagespeed_insights_tool.py report results.csv
+pagespeed report results.csv
 
 # Custom output path
-uv run pagespeed_insights_tool.py report results.json -o dashboard.html
+pagespeed report results.json -o dashboard.html
 
 # Auto-open in browser
-uv run pagespeed_insights_tool.py report results.csv --open
+pagespeed report results.csv --open
 ```
 
 The HTML report includes:
@@ -148,7 +157,7 @@ The HTML report includes:
 Full control with every CLI flag. Same internals as `audit`.
 
 ```bash
-uv run pagespeed_insights_tool.py run https://example.com --strategy desktop --categories performance accessibility --delay 2.0
+pagespeed run https://example.com --strategy desktop --categories performance accessibility --delay 2.0
 ```
 
 ## Configuration
@@ -335,7 +344,7 @@ Output files auto-increment with timestamps, so cron jobs won't overwrite previo
 
 ```bash
 # Every Monday at 6am UTC
-0 6 * * 1 cd /path/to/project && uv run pagespeed_insights_tool.py audit -f urls.txt --profile full
+0 6 * * 1 cd /path/to/project && pagespeed audit -f urls.txt --profile full
 ```
 
 ## Testing
