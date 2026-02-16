@@ -87,7 +87,13 @@ git branch --list '[0-9]*'
    git merge NNN-name
    ```
 
-5. **Cleanup** — Remove the worktree and delete the branch:
+5. **Commit plan** — After merging, commit the plan file to `main`:
+   ```bash
+   git add .claude/plans/NN-plan-name.md
+   git commit -m "docs: add plan for ..."
+   ```
+
+6. **Cleanup** — Remove the worktree and delete the branch:
    ```bash
    git worktree remove /tmp/worktrees/NNN-name
    git branch -d NNN-name
