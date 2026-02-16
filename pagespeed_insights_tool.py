@@ -236,6 +236,7 @@ def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | No
         "budget_format": "budget_format",
         "webhook_url": "webhook",
         "webhook_on": "webhook_on",
+        "runs": "runs",
     }
 
     # Track which args were explicitly set on the CLI
@@ -307,6 +308,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     quick_check_parser.add_argument("url", help="URL to check")
     quick_check_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
     quick_check_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+    quick_check_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- audit ---
     audit_parser = subparsers.add_parser("audit", help="Full batch analysis with report output")
@@ -326,6 +328,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     audit_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     audit_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
+    audit_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- compare ---
     compare_parser = subparsers.add_parser("compare", help="Compare two reports and highlight regressions")
@@ -358,6 +361,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     run_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     run_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
+    run_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- pipeline ---
     pipeline_parser = subparsers.add_parser("pipeline", help="End-to-end: fetch URLs, analyze, write data files, and generate HTML report")
@@ -379,6 +383,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     pipeline_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     pipeline_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
+    pipeline_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- budget ---
     budget_parser = subparsers.add_parser("budget", help="Evaluate existing results against a performance budget")
