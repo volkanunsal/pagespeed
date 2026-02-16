@@ -1,0 +1,36 @@
+# Sitemap pipeline pagespeed.toml — auto-discover URLs from a sitemap.
+#
+# The pipeline command auto-detects sitemap URLs and generates
+# data files + an HTML report in one step.
+#
+# Usage:
+#   pagespeed pipeline https://example.com/sitemap.xml
+#   pagespeed pipeline https://example.com/sitemap.xml --open
+#   pagespeed pipeline https://example.com/sitemap.xml --profile blog-only
+
+[settings]
+strategy = "mobile"
+output_format = "both"
+output_dir = "./reports"
+categories = ["performance"]
+
+# Limit the number of URLs pulled from the sitemap
+sitemap_limit = 20
+
+# Filter sitemap URLs with a regex (only matching URLs are analyzed)
+# sitemap_filter = "/blog/"
+
+# Analyze only blog posts
+#   pagespeed pipeline https://example.com/sitemap.xml --profile blog-only
+[profiles.blog-only]
+sitemap_filter = "/blog/"
+sitemap_limit = 10
+categories = ["performance", "seo"]
+
+# Analyze only product pages, desktop strategy
+#   pagespeed pipeline https://example.com/sitemap.xml --profile products
+[profiles.products]
+sitemap_filter = "/products/"
+sitemap_limit = 15
+strategy = "desktop"
+categories = ["performance", "accessibility"]

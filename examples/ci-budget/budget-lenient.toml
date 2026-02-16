@@ -1,0 +1,18 @@
+# Lenient performance budget — for dev/staging environments.
+#
+# Relaxed thresholds to catch major regressions without blocking
+# every deployment. Tighten as your site improves.
+# Use with:
+#   pagespeed audit -f urls.txt --budget budget-lenient.toml
+
+[meta]
+name = "Dev/staging budget (lenient)"
+
+[thresholds]
+# Lighthouse scores (0-100, must be >= threshold)
+min_performance_score = 50
+
+# Core Web Vitals (must be <= threshold)
+max_lcp_ms = 4000    # Largest Contentful Paint
+max_cls = 0.25       # Cumulative Layout Shift
+max_tbt_ms = 600     # Total Blocking Time

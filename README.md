@@ -347,6 +347,19 @@ Output files auto-increment with timestamps, so cron jobs won't overwrite previo
 0 6 * * 1 cd /path/to/project && pagespeed audit -f urls.txt --profile full
 ```
 
+## Examples
+
+The [`examples/`](examples/) folder contains ready-to-use configuration files for common workflows:
+
+| Example | Description |
+|---------|-------------|
+| [`basic/`](examples/basic/) | Minimal config with API key, strategy, and a sample URL list |
+| [`multi-profile/`](examples/multi-profile/) | Named profiles for quick, full, and client-report workflows |
+| [`ci-budget/`](examples/ci-budget/) | Strict and lenient performance budgets for CI pipelines |
+| [`sitemap-pipeline/`](examples/sitemap-pipeline/) | Sitemap auto-discovery with regex filters and section-specific profiles |
+
+Copy any example folder into your project and edit to taste. See [`examples/README.md`](examples/README.md) for full details.
+
 ## Testing
 
 The project includes a comprehensive test suite (102 tests across 18 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.

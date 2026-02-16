@@ -1,0 +1,22 @@
+# Strict performance budget — for production deployments.
+#
+# All thresholds must pass for every URL, or the tool exits with code 2.
+# Use with:
+#   pagespeed audit -f urls.txt --budget budget-strict.toml
+#   pagespeed budget results.csv --budget budget-strict.toml
+
+[meta]
+name = "Production budget (strict)"
+
+[thresholds]
+# Lighthouse scores (0-100, must be >= threshold)
+min_performance_score = 90
+min_accessibility_score = 90
+min_best_practices_score = 90
+min_seo_score = 90
+
+# Core Web Vitals (must be <= threshold)
+max_lcp_ms = 2500    # Largest Contentful Paint
+max_cls = 0.1        # Cumulative Layout Shift
+max_tbt_ms = 200     # Total Blocking Time
+max_fcp_ms = 1800    # First Contentful Paint

@@ -1,0 +1,20 @@
+# Basic pagespeed.toml — minimal config for getting started.
+#
+# Place this file in your project root or at ~/.config/pagespeed/config.toml
+# The tool auto-discovers it; no --config flag needed.
+
+[settings]
+# Google API key (or set PAGESPEED_API_KEY env var instead)
+api_key = "YOUR_API_KEY_HERE"
+
+# Default strategy: "mobile", "desktop", or "both"
+strategy = "mobile"
+
+# Default URL file for the -f flag
+urls_file = "urls.txt"
+
+# Output format: "csv", "json", or "both"
+output_format = "csv"
+
+# Directory for auto-named output files
+output_dir = "./reports"

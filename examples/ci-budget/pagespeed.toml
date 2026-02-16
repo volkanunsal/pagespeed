@@ -1,0 +1,25 @@
+# CI-oriented pagespeed.toml — designed for GitHub Actions workflows.
+#
+# Pairs with budget-strict.toml or budget-lenient.toml for pass/fail checks.
+# When GITHUB_ACTIONS is set, budget_format auto-detects to "github"
+# (producing ::error:: / ::notice:: annotations), but you can force it here.
+#
+# Example GitHub Actions step:
+#   - name: Performance audit
+#     env:
+#       PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
+#     run: pagespeed audit -f urls.txt --budget budget-strict.toml
+
+[settings]
+strategy = "mobile"
+output_format = "json"
+output_dir = "./reports"
+categories = ["performance", "accessibility", "best-practices", "seo"]
+
+# Budget settings
+budget = "budget-strict.toml"
+budget_format = "github"
+
+# Optional: send results to Slack/Discord/custom endpoint
+# webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+# webhook_on = "fail"    # "always" or "fail"

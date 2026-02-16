@@ -1,0 +1,7 @@
+# Sample URL list — one URL per line.
+# Lines starting with # are comments and will be skipped.
+# URLs without a scheme default to https://.
+
+https://example.com
+https://example.com/about
+https://example.com/contact

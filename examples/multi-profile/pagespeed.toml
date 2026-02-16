@@ -1,0 +1,35 @@
+# Multi-profile pagespeed.toml — switch workflows with --profile.
+#
+# Usage:
+#   pagespeed audit -f urls.txt --profile quick
+#   pagespeed audit -f urls.txt --profile full
+#   pagespeed audit --profile client-report
+
+[settings]
+api_key = "YOUR_API_KEY_HERE"
+strategy = "mobile"
+output_format = "csv"
+output_dir = "./reports"
+categories = ["performance"]
+
+# Fast mobile-only scan — performance scores in CSV.
+#   pagespeed audit -f urls.txt --profile quick
+[profiles.quick]
+strategy = "mobile"
+output_format = "csv"
+categories = ["performance"]
+
+# Comprehensive audit — both strategies, all categories, CSV + JSON.
+#   pagespeed audit -f urls.txt --profile full
+[profiles.full]
+strategy = "both"
+output_format = "both"
+categories = ["performance", "accessibility", "best-practices", "seo"]
+
+# Client deliverable — both strategies, HTML-ready output in a dedicated folder.
+#   pagespeed audit -f client_urls.txt --profile client-report
+[profiles.client-report]
+strategy = "both"
+output_format = "both"
+output_dir = "./client-reports"
+categories = ["performance", "accessibility", "seo"]
