@@ -805,6 +805,83 @@ def process_urls(
     return pd.DataFrame(results)
 
 
+def aggregate_multi_run(dataframe: pd.DataFrame, total_runs: int) -> pd.DataFrame:
+    """Aggregate multi-run results into median values per (url, strategy) pair.
+
+    For each (url, strategy) group:
+    - Numeric columns (MEDIAN_ELIGIBLE_COLUMNS): compute median
+    - Categorical field columns (field_*_category): take mode (most frequent)
+    - error: None if any run succeeded, otherwise first error message
+    - fetch_time: take the last (most recent) value
+    - Adds metadata: runs_completed, score_range, score_stddev
+    """
+    if total_runs <= 1:
+        return dataframe
+
+    group_keys = ["url", "strategy"]
+    aggregated_rows = []
+
+    for (url, strategy), group in dataframe.groupby(group_keys, sort=False):
+        successful_mask = group["error"].isna() | (group["error"] == "") if "error" in group.columns else pd.Series(True, index=group.index)
+        successful_runs = group[successful_mask]
+        runs_completed = len(successful_runs)
+
+        if runs_completed == 0:
+            error_row = group.iloc[0].to_dict()
+            error_row["runs_completed"] = 0
+            error_row["score_range"] = None
+            error_row["score_stddev"] = None
+            aggregated_rows.append(error_row)
+            continue
+
+        row = {"url": url, "strategy": strategy, "error": None}
+
+        # Median for numeric columns
+        for col in MEDIAN_ELIGIBLE_COLUMNS:
+            if col not in successful_runs.columns:
+                continue
+            values = pd.to_numeric(successful_runs[col], errors="coerce").dropna()
+            if len(values) > 0:
+                median_value = values.median()
+                if col in ("lab_cls", "field_cls"):
+                    row[col] = round(median_value, 4)
+                else:
+                    row[col] = round(median_value)
+            else:
+                row[col] = None
+
+        # Mode for categorical columns
+        for col in successful_runs.columns:
+            if not col.endswith("_category"):
+                continue
+            values = successful_runs[col].dropna()
+            if len(values) > 0:
+                row[col] = values.mode().iloc[0]
+            else:
+                row[col] = None
+
+        # fetch_time: last value
+        if "fetch_time" in successful_runs.columns:
+            row["fetch_time"] = successful_runs["fetch_time"].iloc[-1]
+
+        # Run metadata
+        row["runs_completed"] = runs_completed
+        perf_scores = pd.to_numeric(successful_runs.get("performance_score", pd.Series(dtype=float)), errors="coerce").dropna()
+        if len(perf_scores) > 1:
+            row["score_range"] = round(perf_scores.max() - perf_scores.min())
+            row["score_stddev"] = round(perf_scores.std(), 1)
+        elif len(perf_scores) == 1:
+            row["score_range"] = 0
+            row["score_stddev"] = 0.0
+        else:
+            row["score_range"] = None
+            row["score_stddev"] = None
+
+        aggregated_rows.append(row)
+
+    return pd.DataFrame(aggregated_rows)
+
+
 # ---------------------------------------------------------------------------
 # Output Formats
 # ---------------------------------------------------------------------------
