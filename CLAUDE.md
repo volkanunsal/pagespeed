@@ -4,24 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Single-file Python CLI tool (`pagespeed_insights_tool.py`) that batch-queries Google's PageSpeed Insights API v5 and outputs CSV/JSON/HTML reports. Uses PEP 723 inline script metadata — no `pyproject.toml` or project scaffolding.
+Single-file Python CLI tool (`pagespeed_insights_tool.py`) that batch-queries Google's PageSpeed Insights API v5 and outputs CSV/JSON/HTML reports. Published to PyPI as `pagespeed-insights` and also supports PEP 723 inline script metadata for direct `uv run` usage.
 
 ## Running the Tool
 
-All commands use `uv run` which auto-manages the virtualenv and dependencies:
+When installed via `pip install pagespeed-insights` or run via `uvx pagespeed-insights`:
 
 ```bash
-uv run pagespeed_insights_tool.py --help
-uv run pagespeed_insights_tool.py quick-check https://example.com
-uv run pagespeed_insights_tool.py audit -f urls.txt --strategy both --output-format both
-uv run pagespeed_insights_tool.py pipeline https://example.com/sitemap.xml --sitemap-limit 20 --open
-uv run pagespeed_insights_tool.py compare before.csv after.csv
-uv run pagespeed_insights_tool.py report results.csv --open
-uv run pagespeed_insights_tool.py pipeline https://example.com --budget cwv
-uv run pagespeed_insights_tool.py budget results.csv --budget budget.toml
+pagespeed --help
+pagespeed quick-check https://example.com
+pagespeed audit -f urls.txt --strategy both --output-format both
+pagespeed pipeline https://example.com/sitemap.xml --sitemap-limit 20 --open
+pagespeed compare before.csv after.csv
+pagespeed report results.csv --open
+pagespeed pipeline https://example.com --budget cwv
+pagespeed budget results.csv --budget budget.toml
 ```
 
-There are no tests, no linter config, and no build step. The tool is the single `.py` file.
+For local development, `uv run` still works via PEP 723 inline metadata:
+
+```bash
+uv run pagespeed_insights_tool.py quick-check https://example.com
+```
 
 ## Architecture
 
@@ -112,3 +116,13 @@ git branch --list '[0-9]*'
 ## Config File
 
 Optional `pagespeed.toml` discovered in CWD or `~/.config/pagespeed/config.toml`. Supports `[settings]` defaults and `[profiles.name]` named profiles applied via `--profile`.
+
+## Distribution
+
+- **PyPI package**: `pagespeed-insights` — installs a `pagespeed` console script
+- **Console script entry point**: `pagespeed` → `pagespeed_insights_tool:main`
+- **Dual-mode compatibility**: The tool works both as an installed package (`pagespeed` command) and as a PEP 723 script (`uv run pagespeed_insights_tool.py`). The `# /// script` block at the top is ignored by hatchling but enables direct `uv run` usage.
+- **Dependency sync**: Dependencies are declared in two places — `pyproject.toml` `[project.dependencies]` and the PEP 723 `# /// script` block. Both must be kept in sync when adding/removing dependencies.
+- **Version**: Defined as `__version__` in `pagespeed_insights_tool.py`. Hatch reads it dynamically via `[tool.hatch.version]`.
+- **Build**: `uv build` produces sdist + wheel in `dist/`. Only `pagespeed_insights_tool.py` is included (controlled by `[tool.hatch.build] include`).
+- **Release process**: Bump `__version__` in `pagespeed_insights_tool.py`, commit, tag `vX.Y.Z`, push tag. The `publish.yml` workflow handles test → build → PyPI publish → GitHub Release.
