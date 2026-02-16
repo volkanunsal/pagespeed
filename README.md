@@ -352,3 +352,7 @@ uv run test_pagespeed_insights_tool.py -v TestValidateUrl
 # Run a specific test method
 uv run test_pagespeed_insights_tool.py -v TestExtractMetrics.test_full_extraction
 ```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
