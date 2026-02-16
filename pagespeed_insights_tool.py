@@ -52,6 +52,7 @@ DEFAULT_STRATEGY = "mobile"
 DEFAULT_OUTPUT_FORMAT = "csv"
 DEFAULT_OUTPUT_DIR = "./reports"
 DEFAULT_CATEGORIES = ["performance"]
+DEFAULT_RUNS = 1
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0
@@ -117,6 +118,16 @@ CWV_BUDGET_PRESET = {
     "max_cls":    CWV_THRESHOLDS["lab_cls"]["good"],
     "max_tbt_ms": CWV_THRESHOLDS["lab_tbt_ms"]["good"],
     "max_fcp_ms": CWV_THRESHOLDS["lab_fcp_ms"]["good"],
+}
+
+# Columns eligible for median aggregation across multi-run results.
+MEDIAN_ELIGIBLE_COLUMNS = {
+    "performance_score",
+    "accessibility_score",
+    "best_practices_score",
+    "seo_score",
+    *(col for _, col in LAB_METRICS),
+    *(val_col for _, val_col, _ in FIELD_METRICS),
 }
 
 
