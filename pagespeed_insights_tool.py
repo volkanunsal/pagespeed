@@ -289,6 +289,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers")
     run_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
 
+    # --- pipeline ---
+    pipeline_parser = subparsers.add_parser("pipeline", help="End-to-end: fetch URLs, analyze, write data files, and generate HTML report")
+    pipeline_parser.add_argument("source", nargs="*", default=[], help="Sitemap URL/path (auto-detected) or plain URLs")
+    pipeline_parser.add_argument("-f", "--file", dest="file", action=TrackingAction, default=None, help="File with one URL per line")
+    pipeline_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="Explicit sitemap URL/path (when positional args are plain URLs)")
+    pipeline_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
+    pipeline_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
+    pipeline_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    pipeline_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
+    pipeline_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path (overrides auto-naming)")
+    pipeline_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for auto-named output files")
+    pipeline_parser.add_argument("-d", "--delay", dest="delay", action=TrackingAction, type=float, default=DEFAULT_DELAY, help="Seconds between API requests")
+    pipeline_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers (1 = sequential)")
+    pipeline_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+    pipeline_parser.add_argument("--open", dest="open_browser", action=TrackingStoreTrueAction, default=False, help="Auto-open HTML report in browser")
+    pipeline_parser.add_argument("--no-report", dest="no_report", action=TrackingStoreTrueAction, default=False, help="Skip HTML report generation (data files only)")
+
     return parser
 
 
@@ -1445,6 +1462,74 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: pipeline
+# ---------------------------------------------------------------------------
+
+
+def cmd_pipeline(args: argparse.Namespace) -> None:
+    """End-to-end pipeline: resolve URLs, analyze, write data, generate HTML report."""
+
+    # --- Phase 1: Resolve sources ---
+    source_args = getattr(args, "source", [])
+    explicit_sitemap = getattr(args, "sitemap", None)
+    sitemap_target = explicit_sitemap
+    plain_urls: list[str] = []
+
+    if not explicit_sitemap and len(source_args) == 1 and _looks_like_sitemap(source_args[0]):
+        # Single positional arg that looks like a sitemap
+        sitemap_target = source_args[0]
+    else:
+        plain_urls = source_args
+
+    # --- Phase 2: Load URLs ---
+    urls = load_urls(
+        plain_urls,
+        getattr(args, "file", None),
+        sitemap=sitemap_target,
+        sitemap_limit=getattr(args, "sitemap_limit", None),
+        sitemap_filter=getattr(args, "sitemap_filter", None),
+        verbose=getattr(args, "verbose", False),
+    )
+
+    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+
+    # --- Phase 3: Analyze ---
+    print(f"Pipeline: analyzing {len(urls)} URL(s) with strategy: {args.strategy}", file=sys.stderr)
+    dataframe = process_urls(
+        urls=urls,
+        api_key=args.api_key,
+        strategies=strategies,
+        categories=categories,
+        delay=args.delay,
+        workers=args.workers,
+        verbose=args.verbose,
+    )
+
+    # --- Phase 4: Write data files + print summary ---
+    strategy_label = args.strategy if args.strategy != "both" else "both"
+    output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
+    output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
+    explicit_output = getattr(args, "output", None)
+
+    _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
+    _print_audit_summary(dataframe)
+
+    # --- Phase 5: Generate HTML report ---
+    if not getattr(args, "no_report", False):
+        html_content = generate_html_report(dataframe)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        html_dir = Path(output_dir)
+        html_dir.mkdir(parents=True, exist_ok=True)
+        html_path = html_dir / f"{timestamp}-report.html"
+        html_path.write_text(html_content)
+        print(f"HTML report written to: {html_path}", file=sys.stderr)
+
+        if getattr(args, "open_browser", False):
+            webbrowser.open(html_path.resolve().as_uri())
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1472,6 +1557,7 @@ def main() -> None:
         "compare": cmd_compare,
         "report": cmd_report,
         "run": cmd_run,
+        "pipeline": cmd_pipeline,
     }
 
     handler = commands.get(args.command)
