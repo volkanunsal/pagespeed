@@ -337,3 +337,18 @@ Output files auto-increment with timestamps, so cron jobs won't overwrite previo
 # Every Monday at 6am UTC
 0 6 * * 1 cd /path/to/project && uv run pagespeed_insights_tool.py audit -f urls.txt --profile full
 ```
+
+## Testing
+
+The project includes a comprehensive test suite (102 tests across 18 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.
+
+```bash
+# Run all tests
+uv run test_pagespeed_insights_tool.py -v
+
+# Run a single test class
+uv run test_pagespeed_insights_tool.py -v TestValidateUrl
+
+# Run a specific test method
+uv run test_pagespeed_insights_tool.py -v TestExtractMetrics.test_full_extraction
+```
