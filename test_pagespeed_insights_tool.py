@@ -1429,5 +1429,282 @@ class TestCmdPipeline(unittest.TestCase):
             self.assertIn("-report.html", html_files[0].name)
 
 
+# ===================================================================
+# 23. TestLoadBudget
+# ===================================================================
+
+
+class TestLoadBudget(unittest.TestCase):
+    """Tests for load_budget()."""
+
+    def test_cwv_preset(self):
+        budget = pst.load_budget("cwv")
+        self.assertEqual(budget["meta"]["name"], "Core Web Vitals")
+        self.assertIn("max_lcp_ms", budget["thresholds"])
+        self.assertEqual(budget["thresholds"]["max_lcp_ms"], 2500)
+
+    def test_valid_toml_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
+            fh.write('[meta]\nname = "Test budget"\n\n[thresholds]\nmin_performance_score = 90\nmax_lcp_ms = 2500\n')
+            fh.flush()
+            budget = pst.load_budget(fh.name)
+        os.unlink(fh.name)
+        self.assertEqual(budget["meta"]["name"], "Test budget")
+        self.assertEqual(budget["thresholds"]["min_performance_score"], 90)
+        self.assertEqual(budget["thresholds"]["max_lcp_ms"], 2500)
+
+    def test_file_not_found_exits(self):
+        with self.assertRaises(SystemExit):
+            pst.load_budget("/tmp/nonexistent_budget_xyzzy_42.toml")
+
+    def test_malformed_toml_exits(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
+            fh.write("this is not valid TOML {{{\n")
+            fh.flush()
+            with self.assertRaises(SystemExit):
+                pst.load_budget(fh.name)
+        os.unlink(fh.name)
+
+
+# ===================================================================
+# 24. TestEvaluateBudget
+# ===================================================================
+
+
+class TestEvaluateBudget(unittest.TestCase):
+    """Tests for evaluate_budget()."""
+
+    def _budget(self, **thresholds):
+        return {"thresholds": thresholds, "meta": {"name": "Test"}}
+
+    def test_all_pass(self):
+        df = _sample_dataframe()
+        budget = self._budget(min_performance_score=90)
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "pass")
+        self.assertEqual(verdict["passed"], 2)
+        self.assertEqual(verdict["failed"], 0)
+
+    def test_one_fail(self):
+        df = _sample_dataframe()
+        # Mobile row has score 92, desktop has 98 — threshold 95 fails mobile
+        budget = self._budget(min_performance_score=95)
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "fail")
+        self.assertEqual(verdict["failed"], 1)
+        self.assertEqual(verdict["passed"], 1)
+
+    def test_multiple_violations(self):
+        df = _sample_dataframe()
+        budget = self._budget(min_performance_score=99, max_lcp_ms=100)
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "fail")
+        # Find the result with most violations
+        max_violations = max(len(r["violations"]) for r in verdict["results"])
+        self.assertGreaterEqual(max_violations, 2)
+
+    def test_missing_metric_skipped(self):
+        rows = [{"url": "https://example.com", "strategy": "mobile", "error": None, "performance_score": 90}]
+        df = pd.DataFrame(rows)
+        budget = self._budget(max_lcp_ms=2500)  # lab_lcp_ms not in DataFrame
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "pass")
+
+    def test_all_errors(self):
+        rows = [{"url": "https://example.com", "strategy": "mobile", "error": "HTTP 500"}]
+        df = pd.DataFrame(rows)
+        budget = self._budget(min_performance_score=90)
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "error")
+        self.assertEqual(verdict["errors_skipped"], 1)
+
+    def test_partial_errors(self):
+        rows = [
+            {"url": "https://good.com", "strategy": "mobile", "error": None, "performance_score": 95},
+            {"url": "https://bad.com", "strategy": "mobile", "error": "HTTP 500", "performance_score": None},
+        ]
+        df = pd.DataFrame(rows)
+        budget = self._budget(min_performance_score=90)
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "pass")
+        self.assertEqual(verdict["errors_skipped"], 1)
+        self.assertEqual(verdict["total"], 1)
+
+    def test_empty_thresholds_all_pass(self):
+        df = _sample_dataframe()
+        budget = {"thresholds": {}, "meta": {"name": "Empty"}}
+        verdict = pst.evaluate_budget(df, budget)
+        self.assertEqual(verdict["verdict"], "pass")
+        self.assertEqual(verdict["passed"], 2)
+
+
+# ===================================================================
+# 25. TestFormatBudget
+# ===================================================================
+
+
+class TestFormatBudget(unittest.TestCase):
+    """Tests for budget output formatters."""
+
+    def _pass_verdict(self):
+        return {
+            "budget_name": "Test",
+            "verdict": "pass",
+            "passed": 2,
+            "failed": 0,
+            "total": 2,
+            "errors_skipped": 0,
+            "results": [
+                {"url": "https://a.com", "strategy": "mobile", "verdict": "pass", "violations": []},
+                {"url": "https://b.com", "strategy": "mobile", "verdict": "pass", "violations": []},
+            ],
+        }
+
+    def _fail_verdict(self):
+        return {
+            "budget_name": "Test",
+            "verdict": "fail",
+            "passed": 1,
+            "failed": 1,
+            "total": 2,
+            "errors_skipped": 0,
+            "results": [
+                {"url": "https://a.com", "strategy": "mobile", "verdict": "pass", "violations": []},
+                {
+                    "url": "https://b.com",
+                    "strategy": "mobile",
+                    "verdict": "fail",
+                    "violations": [
+                        {"metric": "performance_score", "actual": 72, "threshold": 90, "operator": ">="},
+                    ],
+                },
+            ],
+        }
+
+    def test_text_pass(self):
+        output = pst.format_budget_text(self._pass_verdict())
+        self.assertIn("PASS", output)
+        self.assertIn("2 passed", output)
+
+    def test_text_fail(self):
+        output = pst.format_budget_text(self._fail_verdict())
+        self.assertIn("FAIL", output)
+        self.assertIn("performance_score: 72", output)
+
+    def test_json_structure(self):
+        output = pst.format_budget_json(self._fail_verdict())
+        data = json.loads(output)
+        self.assertEqual(data["verdict"], "fail")
+        self.assertEqual(len(data["results"]), 2)
+
+    def test_github_annotations(self):
+        output = pst.format_budget_github(self._fail_verdict())
+        self.assertIn("::error::", output)
+        self.assertIn("performance_score=72", output)
+
+    def test_github_pass_notice(self):
+        output = pst.format_budget_github(self._pass_verdict())
+        self.assertIn("::notice::", output)
+
+
+# ===================================================================
+# 26. TestSendBudgetWebhook
+# ===================================================================
+
+
+class TestSendBudgetWebhook(unittest.TestCase):
+    """Tests for send_budget_webhook()."""
+
+    @patch("pagespeed_insights_tool.requests.post")
+    def test_success(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+        verdict = {"verdict": "pass"}
+        pst.send_budget_webhook("https://hooks.example.com/test", verdict)
+        mock_post.assert_called_once_with("https://hooks.example.com/test", json=verdict, timeout=30)
+
+    @patch("pagespeed_insights_tool.requests.post")
+    def test_failure_warning(self, mock_post):
+        import requests as real_requests
+        mock_post.side_effect = real_requests.RequestException("Connection refused")
+        with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+            pst.send_budget_webhook("https://hooks.example.com/test", {"verdict": "fail"})
+        self.assertIn("Warning: webhook delivery failed", mock_stderr.getvalue())
+
+
+# ===================================================================
+# 27. TestApplyBudget
+# ===================================================================
+
+
+class TestApplyBudget(unittest.TestCase):
+    """Tests for _apply_budget()."""
+
+    def _make_args(self, budget=None, budget_format="text", webhook=None, webhook_on="always"):
+        args = argparse.Namespace(
+            budget=budget,
+            budget_format=budget_format,
+            webhook=webhook,
+            webhook_on=webhook_on,
+            _explicit_args=[],
+        )
+        return args
+
+    def test_pass_returns_zero(self):
+        df = _sample_dataframe()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
+            fh.write('[thresholds]\nmin_performance_score = 90\n')
+            fh.flush()
+            args = self._make_args(budget=fh.name)
+            exit_code = pst._apply_budget(df, args)
+        os.unlink(fh.name)
+        self.assertEqual(exit_code, 0)
+
+    def test_fail_returns_budget_exit_code(self):
+        df = _sample_dataframe()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
+            fh.write('[thresholds]\nmin_performance_score = 99\n')
+            fh.flush()
+            args = self._make_args(budget=fh.name)
+            exit_code = pst._apply_budget(df, args)
+        os.unlink(fh.name)
+        self.assertEqual(exit_code, pst.BUDGET_EXIT_CODE)
+
+    def test_all_errors_returns_one(self):
+        rows = [{"url": "https://fail.com", "strategy": "mobile", "error": "HTTP 500"}]
+        df = pd.DataFrame(rows)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
+            fh.write('[thresholds]\nmin_performance_score = 90\n')
+            fh.flush()
+            args = self._make_args(budget=fh.name)
+            exit_code = pst._apply_budget(df, args)
+        os.unlink(fh.name)
+        self.assertEqual(exit_code, 1)
+
+
+# ===================================================================
+# 28. TestBudgetParser
+# ===================================================================
+
+
+class TestBudgetParser(unittest.TestCase):
+    """Tests for budget-related argument parsing."""
+
+    def setUp(self):
+        self.parser = pst.build_argument_parser()
+
+    def test_budget_subcommand_parses(self):
+        args = self.parser.parse_args(["budget", "results.csv", "--budget", "budget.toml"])
+        self.assertEqual(args.command, "budget")
+        self.assertEqual(args.input_file, "results.csv")
+        self.assertEqual(args.budget, "budget.toml")
+
+    def test_pipeline_budget_flag_parses(self):
+        args = self.parser.parse_args(["pipeline", "https://example.com", "--budget", "cwv"])
+        self.assertEqual(args.budget, "cwv")
+        self.assertEqual(args.budget_format, "text")
+
+
 if __name__ == "__main__":
     unittest.main()
