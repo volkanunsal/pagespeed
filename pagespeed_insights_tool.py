@@ -739,16 +739,21 @@ def process_urls(
     delay: float,
     workers: int,
     verbose: bool = False,
+    runs: int = 1,
 ) -> pd.DataFrame:
     """Process multiple URLs concurrently and return a DataFrame of results."""
     results: list[dict] = []
-    total_tasks = len(urls) * len(strategies)
+    # Build interleaved task list: all (url, strategy) pairs for run 1, then run 2, etc.
+    base_tasks = [(url, strategy) for url in urls for strategy in strategies]
+    task_list = base_tasks * runs
+    total_tasks = len(task_list)
+    base_count = len(base_tasks)
     completed_count = 0
     lock = threading.Lock()
     semaphore = threading.Semaphore(1)  # rate limiter
     last_request_time = [0.0]  # mutable for closure
 
-    def process_single(url: str, strategy: str) -> dict:
+    def process_single(url: str, strategy: str, task_index: int) -> dict:
         nonlocal completed_count
         # Rate limiting
         with semaphore:
@@ -760,7 +765,8 @@ def process_urls(
 
         try:
             if verbose:
-                print(f"  Fetching {url} ({strategy})...", file=sys.stderr)
+                run_label = f" [run {task_index // base_count + 1}/{runs}]" if runs > 1 else ""
+                print(f"  Fetching {url} ({strategy}){run_label}...", file=sys.stderr)
             response = fetch_pagespeed_result(url, strategy, api_key, categories)
             metrics = extract_metrics(response, url, strategy)
         except PageSpeedError as exc:
@@ -773,36 +779,44 @@ def process_urls(
 
         with lock:
             completed_count += 1
-            print(
-                f"\r  Progress: {completed_count}/{total_tasks}",
-                end="",
-                file=sys.stderr,
-                flush=True,
-            )
+            if runs > 1:
+                current_run = (completed_count - 1) // base_count + 1
+                print(
+                    f"\r  Progress: {completed_count}/{total_tasks} (run {current_run}/{runs})",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"\r  Progress: {completed_count}/{total_tasks}",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         return metrics
 
     effective_workers = min(workers, total_tasks)
     if effective_workers <= 1:
         # Sequential processing
-        for url in urls:
-            for strategy in strategies:
-                result = process_single(url, strategy)
-                results.append(result)
+        for task_index, (url, strategy) in enumerate(task_list):
+            result = process_single(url, strategy, task_index)
+            results.append(result)
     else:
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             futures = {}
-            for url in urls:
-                for strategy in strategies:
-                    future = executor.submit(process_single, url, strategy)
-                    futures[future] = (url, strategy)
+            for task_index, (url, strategy) in enumerate(task_list):
+                future = executor.submit(process_single, url, strategy, task_index)
+                futures[future] = (url, strategy)
 
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
 
     print("", file=sys.stderr)  # newline after progress
-    return pd.DataFrame(results)
+    raw_dataframe = pd.DataFrame(results)
+    return aggregate_multi_run(raw_dataframe, runs)
 
 
 def aggregate_multi_run(dataframe: pd.DataFrame, total_runs: int) -> pd.DataFrame:
