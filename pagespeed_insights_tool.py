@@ -221,6 +221,10 @@ def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | No
         "sitemap": "sitemap",
         "sitemap_limit": "sitemap_limit",
         "sitemap_filter": "sitemap_filter",
+        "budget": "budget",
+        "budget_format": "budget_format",
+        "webhook_url": "webhook",
+        "webhook_on": "webhook_on",
     }
 
     # Track which args were explicitly set on the CLI
@@ -307,6 +311,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("-d", "--delay", dest="delay", action=TrackingAction, type=float, default=DEFAULT_DELAY, help="Seconds between API requests")
     audit_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers (1 = sequential)")
     audit_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+    audit_parser.add_argument("--budget", dest="budget", action=TrackingAction, default=None, help="Budget file (TOML) or 'cwv' preset for pass/fail evaluation")
+    audit_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
+    audit_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
+    audit_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
 
     # --- compare ---
     compare_parser = subparsers.add_parser("compare", help="Compare two reports and highlight regressions")
@@ -335,6 +343,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("-d", "--delay", dest="delay", action=TrackingAction, type=float, default=DEFAULT_DELAY, help="Seconds between requests")
     run_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers")
     run_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+    run_parser.add_argument("--budget", dest="budget", action=TrackingAction, default=None, help="Budget file (TOML) or 'cwv' preset for pass/fail evaluation")
+    run_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
+    run_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
+    run_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
 
     # --- pipeline ---
     pipeline_parser = subparsers.add_parser("pipeline", help="End-to-end: fetch URLs, analyze, write data files, and generate HTML report")
@@ -352,6 +364,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
     pipeline_parser.add_argument("--open", dest="open_browser", action=TrackingStoreTrueAction, default=False, help="Auto-open HTML report in browser")
     pipeline_parser.add_argument("--no-report", dest="no_report", action=TrackingStoreTrueAction, default=False, help="Skip HTML report generation (data files only)")
+    pipeline_parser.add_argument("--budget", dest="budget", action=TrackingAction, default=None, help="Budget file (TOML) or 'cwv' preset for pass/fail evaluation")
+    pipeline_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
+    pipeline_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
+    pipeline_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
+
+    # --- budget ---
+    budget_parser = subparsers.add_parser("budget", help="Evaluate existing results against a performance budget")
+    budget_parser.add_argument("input_file", help="Path to CSV or JSON results file")
+    budget_parser.add_argument("--budget", dest="budget", action=TrackingAction, required=True, help="Budget file (TOML) or 'cwv' preset")
+    budget_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
+    budget_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
+    budget_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
 
     return parser
 
@@ -981,6 +1005,41 @@ def send_budget_webhook(webhook_url: str, verdict: dict) -> None:
         print(f"Warning: webhook delivery failed: {exc}", file=sys.stderr)
 
 
+def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
+    """Orchestrate budget evaluation when --budget is set. Returns exit code."""
+    budget = load_budget(args.budget)
+    verdict = evaluate_budget(dataframe, budget)
+
+    if verdict["verdict"] == "error":
+        print("Error: all URLs errored — cannot evaluate budget", file=sys.stderr)
+        return 1
+
+    # Pick output format: explicit flag > GitHub Actions auto-detect > text
+    cli_explicit = set(getattr(args, "_explicit_args", []))
+    budget_format = getattr(args, "budget_format", "text")
+    if "budget_format" not in cli_explicit and os.environ.get("GITHUB_ACTIONS"):
+        budget_format = "github"
+
+    formatters = {
+        "text": format_budget_text,
+        "json": format_budget_json,
+        "github": format_budget_github,
+    }
+    formatter = formatters.get(budget_format, format_budget_text)
+    print(formatter(verdict), file=sys.stderr)
+
+    # Webhook
+    webhook_url = getattr(args, "webhook", None)
+    if webhook_url:
+        webhook_on = getattr(args, "webhook_on", "always")
+        if webhook_on == "always" or (webhook_on == "fail" and verdict["verdict"] == "fail"):
+            send_budget_webhook(webhook_url, verdict)
+
+    if verdict["verdict"] == "fail":
+        return BUDGET_EXIT_CODE
+    return 0
+
+
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
     """Write DataFrame to CSV. Returns the file path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1229,6 +1288,10 @@ def cmd_audit(args: argparse.Namespace) -> None:
 
     _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
     _print_audit_summary(dataframe)
+
+    if getattr(args, "budget", None):
+        exit_code = _apply_budget(dataframe, args)
+        sys.exit(exit_code)
 
 
 # ---------------------------------------------------------------------------
@@ -1731,6 +1794,23 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         if getattr(args, "open_browser", False):
             webbrowser.open(html_path.resolve().as_uri())
 
+    # --- Phase 6: Budget evaluation ---
+    if getattr(args, "budget", None):
+        exit_code = _apply_budget(dataframe, args)
+        sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: budget
+# ---------------------------------------------------------------------------
+
+
+def cmd_budget(args: argparse.Namespace) -> None:
+    """Evaluate existing results against a performance budget (no API calls)."""
+    dataframe = load_report(args.input_file)
+    exit_code = _apply_budget(dataframe, args)
+    sys.exit(exit_code)
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -1761,6 +1841,7 @@ def main() -> None:
         "report": cmd_report,
         "run": cmd_run,
         "pipeline": cmd_pipeline,
+        "budget": cmd_budget,
     }
 
     handler = commands.get(args.command)
