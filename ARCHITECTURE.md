@@ -84,18 +84,18 @@ profile (--profile)── apply_profile ─────┘           │        
 
 ### Component Responsibilities
 
-| Component | Responsibility |
-|-----------|---------------|
-| **CLI Parser** (`build_argument_parser`) | Defines subcommands and flags, tracks explicit arguments |
+| Component                                          | Responsibility                                                 |
+| -------------------------------------------------- | -------------------------------------------------------------- |
+| **CLI Parser** (`build_argument_parser`)           | Defines subcommands and flags, tracks explicit arguments       |
 | **Config Loader** (`load_config`, `apply_profile`) | Reads TOML, merges settings/profiles/CLI with correct priority |
-| **URL Handler** (`validate_url`, `load_urls`) | Normalizes URLs, reads from args/file/stdin |
-| **API Client** (`fetch_pagespeed_result`) | HTTP requests with retry logic, error classification |
-| **Metrics Parser** (`extract_metrics`) | Extracts lab + field data from API response into flat dict |
-| **Batch Processor** (`process_urls`) | Orchestrates concurrent fetching with rate limiting |
-| **CSV Formatter** (`output_csv`) | Flat table output via pandas |
-| **JSON Formatter** (`output_json`) | Structured output with metadata envelope |
-| **HTML Generator** (`generate_html_report`) | Self-contained dashboard with inline CSS/JS |
-| **Subcommand Handlers** (`cmd_*`) | Wire inputs to processing to outputs for each workflow |
+| **URL Handler** (`validate_url`, `load_urls`)      | Normalizes URLs, reads from args/file/stdin                    |
+| **API Client** (`fetch_pagespeed_result`)          | HTTP requests with retry logic, error classification           |
+| **Metrics Parser** (`extract_metrics`)             | Extracts lab + field data from API response into flat dict     |
+| **Batch Processor** (`process_urls`)               | Orchestrates concurrent fetching with rate limiting            |
+| **CSV Formatter** (`output_csv`)                   | Flat table output via pandas                                   |
+| **JSON Formatter** (`output_json`)                 | Structured output with metadata envelope                       |
+| **HTML Generator** (`generate_html_report`)        | Self-contained dashboard with inline CSS/JS                    |
+| **Subcommand Handlers** (`cmd_*`)                  | Wire inputs to processing to outputs for each workflow         |
 
 ### Config Resolution Chain
 
@@ -124,12 +124,12 @@ GET https://www.googleapis.com/pagespeedonline/v5/runPagespeed
 
 ### Parameters
 
-| Parameter | Value |
-|-----------|-------|
-| `url` | Target URL to analyze |
-| `strategy` | `mobile` or `desktop` |
+| Parameter  | Value                                                                      |
+| ---------- | -------------------------------------------------------------------------- |
+| `url`      | Target URL to analyze                                                      |
+| `strategy` | `mobile` or `desktop`                                                      |
 | `category` | `performance`, `accessibility`, `best-practices`, `seo` (multiple allowed) |
-| `key` | API key (optional) |
+| `key`      | API key (optional)                                                         |
 
 ### Response Structure
 
@@ -174,13 +174,13 @@ The semaphore ensures rate limiting even with multiple workers. Workers prepare 
 
 ### Retry Policy
 
-| Status Code | Action |
-|-------------|--------|
-| 200 | Success — return response |
-| 429 | Rate limited — honor `Retry-After` header, exponential backoff |
-| 500, 503 | Server error — exponential backoff (2s, 4s, 8s) |
-| 4xx (other) | Permanent error — fail immediately |
-| Network error | Retry with exponential backoff |
+| Status Code   | Action                                                         |
+| ------------- | -------------------------------------------------------------- |
+| 200           | Success — return response                                      |
+| 429           | Rate limited — honor `Retry-After` header, exponential backoff |
+| 500, 503      | Server error — exponential backoff (2s, 4s, 8s)                |
+| 4xx (other)   | Permanent error — fail immediately                             |
+| Network error | Retry with exponential backoff                                 |
 
 Maximum 3 retries per request. After exhaustion, the URL is recorded with an error and processing continues.
 
@@ -256,14 +256,14 @@ Lab and field metrics are nested for readability. The metadata envelope enables 
 
 The HTML report is self-contained — inline CSS and minimal inline JS, no external dependencies.
 
-| Section | Implementation |
-|---------|---------------|
-| Summary cards | CSS Grid with score-colored values |
-| Score table | HTML table with color-coded cells via CSS classes |
-| Bar charts | Pure CSS (`width: N%`) with colored backgrounds |
-| CWV indicators | Pass/fail based on Google's published thresholds |
+| Section          | Implementation                                           |
+| ---------------- | -------------------------------------------------------- |
+| Summary cards    | CSS Grid with score-colored values                       |
+| Score table      | HTML table with color-coded cells via CSS classes        |
+| Bar charts       | Pure CSS (`width: N%`) with colored backgrounds          |
+| CWV indicators   | Pass/fail based on Google's published thresholds         |
 | Sortable columns | Inline JS — `onclick` on `<th>` elements, DOM reordering |
-| Field data table | Separate table, only rendered when field data exists |
+| Field data table | Separate table, only rendered when field data exists     |
 
 ## Extensibility Points
 
