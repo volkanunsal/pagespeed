@@ -279,7 +279,7 @@ class TrackingStoreTrueAction(argparse.Action):
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands."""
     parser = argparse.ArgumentParser(
-        prog="pagespeed_insights_tool.py",
+        prog="pagespeed",
         description="PageSpeed Insights Batch Analysis CLI Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
