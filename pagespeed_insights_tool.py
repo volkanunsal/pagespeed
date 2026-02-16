@@ -955,6 +955,11 @@ def _print_audit_summary(dataframe: pd.DataFrame) -> None:
     if len(errors) > 0:
         print(f"  Errors:        {len(errors)}", file=sys.stderr)
 
+    if "runs_completed" in dataframe.columns:
+        max_runs = dataframe["runs_completed"].max()
+        if max_runs > 1:
+            print(f"  Runs/URL:      {max_runs} (median scoring)", file=sys.stderr)
+
 
 def evaluate_budget(dataframe: pd.DataFrame, budget: dict) -> dict:
     """Evaluate a DataFrame of results against a performance budget.
@@ -1191,6 +1196,12 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
             record["field_metrics"] = field
 
         record["fetch_time"] = row.get("fetch_time")
+
+        # Multi-run metadata
+        for meta_key in ("runs_completed", "score_range", "score_stddev"):
+            if meta_key in row and pd.notna(row[meta_key]):
+                record[meta_key] = row[meta_key]
+
         results.append(record)
 
     output_data = {
@@ -1203,13 +1214,20 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
         "results": results,
     }
 
+    # Add runs metadata if multi-run
+    if "runs_completed" in dataframe.columns and len(dataframe) > 0:
+        max_runs = int(dataframe["runs_completed"].max())
+        if max_runs > 1:
+            output_data["metadata"]["runs_per_url"] = max_runs
+            output_data["metadata"]["aggregation"] = "median"
+
     with open(output_path, "w") as fh:
         json.dump(output_data, fh, indent=2, default=str)
 
     return str(output_path)
 
 
-def format_terminal_table(metrics: dict | list[dict]) -> str:
+def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = False) -> str:
     """Format metrics as an aligned terminal table."""
     if isinstance(metrics, dict):
         metrics_list = [metrics]
@@ -1238,6 +1256,20 @@ def format_terminal_table(metrics: dict | list[dict]) -> str:
         if score is not None:
             score_indicator = "GOOD" if score >= 90 else ("NEEDS WORK" if score >= 50 else "POOR")
             lines.append(f"  Performance Score: {score}/100 ({score_indicator})")
+
+        # Run metadata
+        if show_run_metadata:
+            runs_completed = row_data.get("runs_completed")
+            score_range = row_data.get("score_range")
+            score_stddev = row_data.get("score_stddev")
+            if runs_completed is not None and runs_completed > 1:
+                parts = [f"Median of {runs_completed} runs"]
+                if score_range is not None:
+                    parts.append(f"range: {score_range}")
+                if score_stddev is not None:
+                    parts.append(f"stddev: {score_stddev}")
+                lines.append(f"  {', '.join(parts)}")
+
         lines.append("")
 
         # Additional category scores
@@ -1536,6 +1568,13 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
     worst_score = scores.min() if len(scores) > 0 else 0
     error_count = len(dataframe[dataframe["error"].notna()]) if "error" in dataframe.columns else 0
 
+    # Multi-run card
+    runs_card = ""
+    if "runs_completed" in dataframe.columns and len(dataframe) > 0:
+        max_runs = int(dataframe["runs_completed"].max())
+        if max_runs > 1:
+            runs_card = f'<div class="card"><div class="value">{max_runs}</div><div class="label">Runs/URL (median)</div></div>'
+
     def score_color(score):
         if pd.isna(score):
             return "#999"
@@ -1753,6 +1792,7 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
     <div class="card"><div class="value {score_class(best_score)}">{best_score:.0f}</div><div class="label">Best Score</div></div>
     <div class="card"><div class="value {score_class(worst_score)}">{worst_score:.0f}</div><div class="label">Worst Score</div></div>
     {"<div class='card'><div class='value poor'>" + str(error_count) + "</div><div class='label'>Errors</div></div>" if error_count > 0 else ""}
+    {runs_card}
 </div>
 
 <h2>Performance Scores</h2>
