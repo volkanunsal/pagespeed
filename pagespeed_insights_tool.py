@@ -18,6 +18,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import textwrap
 import threading
@@ -28,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import requests
@@ -91,6 +93,10 @@ CWV_THRESHOLDS = {
     "field_cls": {"good": 0.1, "poor": 0.25, "unit": "", "label": "CLS"},
     "field_inp_ms": {"good": 200, "poor": 500, "unit": "ms", "label": "INP"},
 }
+
+SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+SITEMAP_FETCH_TIMEOUT = 30
+MAX_SITEMAP_DEPTH = 3
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +171,9 @@ def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | No
         "workers": "workers",
         "categories": "categories",
         "verbose": "verbose",
+        "sitemap": "sitemap",
+        "sitemap_limit": "sitemap_limit",
+        "sitemap_filter": "sitemap_filter",
     }
 
     # Track which args were explicitly set on the CLI
@@ -241,6 +250,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser = subparsers.add_parser("audit", help="Full batch analysis with report output")
     audit_parser.add_argument("urls", nargs="*", default=[], help="URLs to audit")
     audit_parser.add_argument("-f", "--file", dest="file", action=TrackingAction, default=None, help="File with one URL per line")
+    audit_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="URL or local path to sitemap.xml")
+    audit_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
+    audit_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
     audit_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
     audit_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
     audit_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path (overrides auto-naming)")
@@ -266,6 +278,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Low-level direct access with all flags")
     run_parser.add_argument("urls", nargs="*", default=[], help="URLs to analyze")
     run_parser.add_argument("-f", "--file", dest="file", action=TrackingAction, default=None, help="File with one URL per line")
+    run_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="URL or local path to sitemap.xml")
+    run_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
+    run_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
     run_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
     run_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
     run_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path")
@@ -298,8 +313,121 @@ def validate_url(url: str) -> str | None:
     return url
 
 
-def load_urls(url_args: list[str], file_path: str | None, allow_stdin: bool = True) -> list[str]:
-    """Load URLs from positional args, file, or stdin. Returns validated list."""
+def _fetch_sitemap_content(source: str) -> str:
+    """Fetch sitemap XML from a URL or read from a local file path."""
+    if source.startswith(("http://", "https://")):
+        response = requests.get(source, timeout=SITEMAP_FETCH_TIMEOUT)
+        response.raise_for_status()
+        return response.text
+    path = Path(source)
+    return path.read_text()
+
+
+def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) -> list[str]:
+    """Parse sitemap XML and return extracted URLs.
+
+    Handles both <urlset> and <sitemapindex> root elements.
+    Recursively fetches child sitemaps from index files up to MAX_SITEMAP_DEPTH.
+    """
+    if _depth >= MAX_SITEMAP_DEPTH:
+        print(f"Warning: max sitemap depth ({MAX_SITEMAP_DEPTH}) reached, stopping recursion", file=sys.stderr)
+        return []
+
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as exc:
+        print(f"Warning: malformed sitemap XML: {exc}", file=sys.stderr)
+        return []
+
+    # Strip namespace from tag for easier comparison
+    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+
+    urls: list[str] = []
+
+    if root_tag == "sitemapindex":
+        # Try namespaced first, then non-namespaced
+        sitemap_locs = root.findall("sm:sitemap/sm:loc", SITEMAP_NS)
+        if not sitemap_locs:
+            sitemap_locs = root.findall("sitemap/loc")
+        for loc_elem in sitemap_locs:
+            child_url = loc_elem.text.strip() if loc_elem.text else ""
+            if not child_url:
+                continue
+            if verbose:
+                print(f"  Following child sitemap: {child_url}", file=sys.stderr)
+            try:
+                child_content = _fetch_sitemap_content(child_url)
+                child_urls = parse_sitemap_xml(child_content, verbose, _depth + 1)
+                urls.extend(child_urls)
+            except (requests.RequestException, OSError) as exc:
+                print(f"Warning: failed to fetch child sitemap {child_url}: {exc}", file=sys.stderr)
+    else:
+        # Assume <urlset>
+        loc_elements = root.findall("sm:url/sm:loc", SITEMAP_NS)
+        if not loc_elements:
+            loc_elements = root.findall("url/loc")
+        for loc_elem in loc_elements:
+            url_text = loc_elem.text.strip() if loc_elem.text else ""
+            if url_text:
+                urls.append(url_text)
+
+    return urls
+
+
+def fetch_sitemap_urls(
+    source: str,
+    limit: int | None = None,
+    filter_pattern: str | None = None,
+    verbose: bool = False,
+) -> list[str]:
+    """Fetch and filter URLs from a sitemap XML source.
+
+    Args:
+        source: URL or local file path to a sitemap.xml.
+        limit: Maximum number of URLs to return.
+        filter_pattern: Regex pattern to filter URLs (keeps matches).
+        verbose: Print progress to stderr.
+    """
+    try:
+        if verbose:
+            print(f"  Fetching sitemap: {source}", file=sys.stderr)
+        xml_content = _fetch_sitemap_content(source)
+        urls = parse_sitemap_xml(xml_content, verbose)
+    except (requests.RequestException, OSError) as exc:
+        print(f"Warning: failed to fetch sitemap {source}: {exc}", file=sys.stderr)
+        return []
+
+    if verbose:
+        print(f"  Found {len(urls)} URL(s) in sitemap", file=sys.stderr)
+
+    if filter_pattern:
+        try:
+            pattern = re.compile(filter_pattern)
+        except re.error as exc:
+            print(f"Error: invalid sitemap filter regex '{filter_pattern}': {exc}", file=sys.stderr)
+            return []
+        urls = [u for u in urls if pattern.search(u)]
+        if verbose:
+            print(f"  {len(urls)} URL(s) after filter '{filter_pattern}'", file=sys.stderr)
+
+    if limit is not None and limit > 0:
+        urls = urls[:limit]
+        if verbose:
+            print(f"  Limited to {len(urls)} URL(s)", file=sys.stderr)
+
+    return urls
+
+
+def load_urls(
+    url_args: list[str],
+    file_path: str | None,
+    allow_stdin: bool = True,
+    sitemap: str | None = None,
+    sitemap_limit: int | None = None,
+    sitemap_filter: str | None = None,
+    verbose: bool = False,
+) -> list[str]:
+    """Load URLs from positional args, file, stdin, and/or sitemap. Returns validated list."""
     raw_urls: list[str] = []
 
     if url_args:
@@ -313,11 +441,23 @@ def load_urls(url_args: list[str], file_path: str | None, allow_stdin: bool = Tr
     elif allow_stdin and not sys.stdin.isatty():
         raw_urls.extend(sys.stdin.read().splitlines())
 
+    if sitemap:
+        sitemap_urls = fetch_sitemap_urls(
+            source=sitemap,
+            limit=sitemap_limit,
+            filter_pattern=sitemap_filter,
+            verbose=verbose,
+        )
+        raw_urls.extend(sitemap_urls)
+
+    seen: set[str] = set()
     validated: list[str] = []
     for raw in raw_urls:
         cleaned = validate_url(raw)
         if cleaned:
-            validated.append(cleaned)
+            if cleaned not in seen:
+                seen.add(cleaned)
+                validated.append(cleaned)
         elif raw.strip() and not raw.strip().startswith("#"):
             print(f"Warning: skipping invalid URL: {raw.strip()}", file=sys.stderr)
 
@@ -771,6 +911,10 @@ def cmd_audit(args: argparse.Namespace) -> None:
     urls = load_urls(
         getattr(args, "urls", []),
         getattr(args, "file", None),
+        sitemap=getattr(args, "sitemap", None),
+        sitemap_limit=getattr(args, "sitemap_limit", None),
+        sitemap_filter=getattr(args, "sitemap_filter", None),
+        verbose=getattr(args, "verbose", False),
     )
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
