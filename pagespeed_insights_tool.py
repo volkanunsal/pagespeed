@@ -1,0 +1,1303 @@
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#   "requests",
+#   "pandas",
+# ]
+# ///
+"""PageSpeed Insights Batch Analysis CLI Tool.
+
+Automates Google PageSpeed Insights analysis across multiple URLs,
+extracting performance metrics (lab + field data) into structured
+CSV/JSON/HTML reports.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+import textwrap
+import threading
+import time
+import tomllib
+import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+import pandas as pd
+import requests
+
+__version__ = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PAGESPEED_API_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+
+VALID_STRATEGIES = ("mobile", "desktop", "both")
+VALID_CATEGORIES = ("performance", "accessibility", "best-practices", "seo")
+VALID_OUTPUT_FORMATS = ("csv", "json", "both")
+
+DEFAULT_DELAY = 1.5
+DEFAULT_WORKERS = 4
+DEFAULT_STRATEGY = "mobile"
+DEFAULT_OUTPUT_FORMAT = "csv"
+DEFAULT_OUTPUT_DIR = "./reports"
+DEFAULT_CATEGORIES = ["performance"]
+
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2.0
+RETRYABLE_STATUS_CODES = {429, 500, 503}
+
+CONFIG_FILENAMES = ["pagespeed.toml"]
+CONFIG_SEARCH_PATHS = [
+    Path.cwd(),
+    Path.home() / ".config" / "pagespeed",
+]
+
+# Lab metrics: (audit_id, output_column_name)
+LAB_METRICS = [
+    ("first-contentful-paint", "lab_fcp_ms"),
+    ("largest-contentful-paint", "lab_lcp_ms"),
+    ("cumulative-layout-shift", "lab_cls"),
+    ("speed-index", "lab_speed_index_ms"),
+    ("total-blocking-time", "lab_tbt_ms"),
+    ("interactive", "lab_tti_ms"),
+]
+
+# Field metrics: (api_key, output_value_column, output_category_column)
+FIELD_METRICS = [
+    ("FIRST_CONTENTFUL_PAINT_MS", "field_fcp_ms", "field_fcp_category"),
+    ("LARGEST_CONTENTFUL_PAINT_MS", "field_lcp_ms", "field_lcp_category"),
+    ("CUMULATIVE_LAYOUT_SHIFT_SCORE", "field_cls", "field_cls_category"),
+    ("INTERACTION_TO_NEXT_PAINT", "field_inp_ms", "field_inp_category"),
+    ("FIRST_INPUT_DELAY_MS", "field_fid_ms", "field_fid_category"),
+    ("EXPERIMENTAL_TIME_TO_FIRST_BYTE", "field_ttfb_ms", "field_ttfb_category"),
+]
+
+# Core Web Vitals thresholds for HTML report
+CWV_THRESHOLDS = {
+    "lab_lcp_ms": {"good": 2500, "poor": 4000, "unit": "ms", "label": "LCP"},
+    "lab_cls": {"good": 0.1, "poor": 0.25, "unit": "", "label": "CLS"},
+    "lab_tbt_ms": {"good": 200, "poor": 600, "unit": "ms", "label": "TBT"},
+    "lab_fcp_ms": {"good": 1800, "poor": 3000, "unit": "ms", "label": "FCP"},
+    "field_lcp_ms": {"good": 2500, "poor": 4000, "unit": "ms", "label": "LCP"},
+    "field_cls": {"good": 0.1, "poor": 0.25, "unit": "", "label": "CLS"},
+    "field_inp_ms": {"good": 200, "poor": 500, "unit": "ms", "label": "INP"},
+}
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class PageSpeedError(Exception):
+    """Raised when a PageSpeed API request fails after all retries."""
+
+
+# ---------------------------------------------------------------------------
+# Config & Profile
+# ---------------------------------------------------------------------------
+
+
+def discover_config_path() -> Path | None:
+    """Find the first existing config file in search paths."""
+    for search_dir in CONFIG_SEARCH_PATHS:
+        for filename in CONFIG_FILENAMES:
+            candidate = search_dir / filename
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def load_config(config_path: Path | None) -> dict:
+    """Parse a TOML config file and return its contents as a dict."""
+    if config_path is None:
+        return {}
+    try:
+        with open(config_path, "rb") as fh:
+            return tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        print(f"Error: malformed config file {config_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error: cannot read config file {config_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | None) -> argparse.Namespace:
+    """Merge config [settings] and optional profile into args.
+
+    Resolution order (highest priority wins):
+      1. Explicit CLI flags
+      2. Profile values
+      3. [settings] defaults from config
+      4. Built-in defaults (already in args)
+    """
+    settings = config.get("settings", {})
+    profile = {}
+    if profile_name:
+        profiles = config.get("profiles", {})
+        if profile_name not in profiles:
+            available = ", ".join(profiles.keys()) if profiles else "(none)"
+            print(
+                f"Error: profile '{profile_name}' not found in config. Available: {available}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        profile = profiles[profile_name]
+
+    # Map config keys to argparse dest names
+    config_key_map = {
+        "api_key": "api_key",
+        "urls_file": "file",
+        "delay": "delay",
+        "strategy": "strategy",
+        "output_format": "output_format",
+        "output_dir": "output_dir",
+        "workers": "workers",
+        "categories": "categories",
+        "verbose": "verbose",
+    }
+
+    # Track which args were explicitly set on the CLI
+    cli_explicit = set(getattr(args, "_explicit_args", []))
+
+    for config_key, arg_dest in config_key_map.items():
+        if arg_dest in cli_explicit:
+            continue  # CLI flag takes priority
+        # Try profile first, then settings
+        if config_key in profile:
+            setattr(args, arg_dest, profile[config_key])
+        elif config_key in settings:
+            setattr(args, arg_dest, settings[config_key])
+
+    # Resolve API key from env if not set anywhere
+    if not getattr(args, "api_key", None):
+        env_key = os.environ.get("PAGESPEED_API_KEY")
+        if env_key:
+            args.api_key = env_key
+
+    return args
+
+
+# ---------------------------------------------------------------------------
+# CLI Argument Parser
+# ---------------------------------------------------------------------------
+
+
+class TrackingAction(argparse.Action):
+    """Argparse action that records which flags were explicitly provided."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        explicit = getattr(namespace, "_explicit_args", [])
+        explicit.append(self.dest)
+        namespace._explicit_args = explicit
+
+
+class TrackingStoreTrueAction(argparse.Action):
+    """Like store_true but tracks that the flag was explicitly set."""
+
+    def __init__(self, option_strings, dest, default=False, required=False, help=None):
+        super().__init__(option_strings=option_strings, dest=dest, nargs=0, const=True, default=default, required=required, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, True)
+        explicit = getattr(namespace, "_explicit_args", [])
+        explicit.append(self.dest)
+        namespace._explicit_args = explicit
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser with subcommands."""
+    parser = argparse.ArgumentParser(
+        prog="pagespeed_insights_tool.py",
+        description="PageSpeed Insights Batch Analysis CLI Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--api-key", dest="api_key", action=TrackingAction, default=None, help="Google API key (or set PAGESPEED_API_KEY env var)")
+    parser.add_argument("-c", "--config", dest="config", action=TrackingAction, default=None, help="Path to config TOML file")
+    parser.add_argument("-p", "--profile", dest="profile", action=TrackingAction, default=None, help="Named profile from config file")
+    parser.add_argument("-v", "--verbose", dest="verbose", action=TrackingStoreTrueAction, default=False, help="Verbose output to stderr")
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- quick-check ---
+    quick_check_parser = subparsers.add_parser("quick-check", help="Fast single-URL spot check")
+    quick_check_parser.add_argument("url", help="URL to check")
+    quick_check_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    quick_check_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+
+    # --- audit ---
+    audit_parser = subparsers.add_parser("audit", help="Full batch analysis with report output")
+    audit_parser.add_argument("urls", nargs="*", default=[], help="URLs to audit")
+    audit_parser.add_argument("-f", "--file", dest="file", action=TrackingAction, default=None, help="File with one URL per line")
+    audit_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    audit_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
+    audit_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path (overrides auto-naming)")
+    audit_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for auto-named output files")
+    audit_parser.add_argument("-d", "--delay", dest="delay", action=TrackingAction, type=float, default=DEFAULT_DELAY, help="Seconds between API requests")
+    audit_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers (1 = sequential)")
+    audit_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+
+    # --- compare ---
+    compare_parser = subparsers.add_parser("compare", help="Compare two reports and highlight regressions")
+    compare_parser.add_argument("before", help="Path to the 'before' report (CSV or JSON)")
+    compare_parser.add_argument("after", help="Path to the 'after' report (CSV or JSON)")
+    compare_parser.add_argument("--threshold", dest="threshold", type=float, default=5.0, help="Minimum %% change to highlight (default: 5)")
+
+    # --- report ---
+    report_parser = subparsers.add_parser("report", help="Generate a visual HTML report from results")
+    report_parser.add_argument("input_file", help="Path to CSV or JSON results file")
+    report_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Output HTML file path")
+    report_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for auto-named output files")
+    report_parser.add_argument("--open", dest="open_browser", action=TrackingStoreTrueAction, default=False, help="Auto-open report in browser")
+
+    # --- run ---
+    run_parser = subparsers.add_parser("run", help="Low-level direct access with all flags")
+    run_parser.add_argument("urls", nargs="*", default=[], help="URLs to analyze")
+    run_parser.add_argument("-f", "--file", dest="file", action=TrackingAction, default=None, help="File with one URL per line")
+    run_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    run_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
+    run_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path")
+    run_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for output files")
+    run_parser.add_argument("-d", "--delay", dest="delay", action=TrackingAction, type=float, default=DEFAULT_DELAY, help="Seconds between requests")
+    run_parser.add_argument("-w", "--workers", dest="workers", action=TrackingAction, type=int, default=DEFAULT_WORKERS, help="Concurrent workers")
+    run_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# URL Handling
+# ---------------------------------------------------------------------------
+
+
+def validate_url(url: str) -> str | None:
+    """Validate and normalize a URL. Returns the URL or None if invalid."""
+    url = url.strip()
+    if not url or url.startswith("#"):
+        return None
+
+    # Add scheme if missing
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    parsed = urlparse(url)
+    if not parsed.netloc or "." not in parsed.netloc:
+        return None
+    return url
+
+
+def load_urls(url_args: list[str], file_path: str | None, allow_stdin: bool = True) -> list[str]:
+    """Load URLs from positional args, file, or stdin. Returns validated list."""
+    raw_urls: list[str] = []
+
+    if url_args:
+        raw_urls.extend(url_args)
+    elif file_path:
+        path = Path(file_path)
+        if not path.is_file():
+            print(f"Error: URL file not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        raw_urls.extend(path.read_text().splitlines())
+    elif allow_stdin and not sys.stdin.isatty():
+        raw_urls.extend(sys.stdin.read().splitlines())
+
+    validated: list[str] = []
+    for raw in raw_urls:
+        cleaned = validate_url(raw)
+        if cleaned:
+            validated.append(cleaned)
+        elif raw.strip() and not raw.strip().startswith("#"):
+            print(f"Warning: skipping invalid URL: {raw.strip()}", file=sys.stderr)
+
+    if not validated:
+        print("Error: no valid URLs provided.", file=sys.stderr)
+        sys.exit(1)
+
+    return validated
+
+
+# ---------------------------------------------------------------------------
+# API Client
+# ---------------------------------------------------------------------------
+
+
+def fetch_pagespeed_result(
+    url: str,
+    strategy: str,
+    api_key: str | None = None,
+    categories: list[str] | None = None,
+) -> dict:
+    """Fetch PageSpeed Insights results for a single URL + strategy.
+
+    Retries on 429/500/503 with exponential backoff.
+    """
+    # requests supports list values for repeated query params
+    category_list = categories or DEFAULT_CATEGORIES
+    params: dict[str, str | list[str]] = {
+        "url": url,
+        "strategy": strategy,
+        "category": category_list,
+    }
+    if api_key:
+        params["key"] = api_key
+
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = requests.get(
+                PAGESPEED_API_URL,
+                params=params,
+                timeout=120,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+
+            if response.status_code in RETRYABLE_STATUS_CODES:
+                retry_after = response.headers.get("Retry-After")
+                if retry_after and response.status_code == 429:
+                    wait_time = float(retry_after)
+                else:
+                    wait_time = RETRY_BASE_DELAY * (2**attempt)
+                last_error = PageSpeedError(
+                    f"HTTP {response.status_code} for {url} ({strategy})"
+                )
+                if attempt < MAX_RETRIES:
+                    time.sleep(wait_time)
+                    continue
+
+            # Non-retryable error
+            error_detail = ""
+            try:
+                error_body = response.json()
+                error_detail = error_body.get("error", {}).get("message", response.text[:200])
+            except (ValueError, KeyError):
+                error_detail = response.text[:200]
+            raise PageSpeedError(
+                f"HTTP {response.status_code} for {url} ({strategy}): {error_detail}"
+            )
+
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BASE_DELAY * (2**attempt))
+                continue
+
+    raise PageSpeedError(f"Failed after {MAX_RETRIES + 1} attempts for {url} ({strategy}): {last_error}")
+
+
+# ---------------------------------------------------------------------------
+# Metrics Extraction
+# ---------------------------------------------------------------------------
+
+
+def extract_metrics(api_response: dict, url: str, strategy: str) -> dict:
+    """Extract lab and field metrics from a PageSpeed API response."""
+    row: dict[str, object] = {
+        "url": url,
+        "strategy": strategy,
+        "error": None,
+    }
+
+    # Performance score
+    lighthouse = api_response.get("lighthouseResult", {})
+    categories = lighthouse.get("categories", {})
+    perf = categories.get("performance", {})
+    score = perf.get("score")
+    row["performance_score"] = round(score * 100) if score is not None else None
+
+    # Additional category scores
+    for cat_key in ("accessibility", "best-practices", "seo"):
+        cat_data = categories.get(cat_key, {})
+        cat_score = cat_data.get("score")
+        column_name = cat_key.replace("-", "_") + "_score"
+        row[column_name] = round(cat_score * 100) if cat_score is not None else None
+
+    # Lab metrics
+    audits = lighthouse.get("audits", {})
+    for audit_id, column_name in LAB_METRICS:
+        audit_data = audits.get(audit_id, {})
+        value = audit_data.get("numericValue")
+        if value is not None and column_name != "lab_cls":
+            value = round(value)
+        elif value is not None:
+            value = round(value, 4)
+        row[column_name] = value
+
+    # Field metrics
+    loading_exp = api_response.get("loadingExperience", {})
+    field_metrics_data = loading_exp.get("metrics", {})
+    for api_key, value_col, category_col in FIELD_METRICS:
+        metric_data = field_metrics_data.get(api_key, {})
+        percentile = metric_data.get("percentile")
+        category = metric_data.get("category")
+        if percentile is not None and "CLS" in api_key:
+            # CLS is reported as an integer * 100 by the API
+            row[value_col] = round(percentile / 100, 4)
+        else:
+            row[value_col] = percentile
+        row[category_col] = category
+
+    # Timestamp from lighthouse
+    fetch_time = lighthouse.get("fetchTime")
+    row["fetch_time"] = fetch_time
+
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Batch Processing
+# ---------------------------------------------------------------------------
+
+
+def process_urls(
+    urls: list[str],
+    api_key: str | None,
+    strategies: list[str],
+    categories: list[str],
+    delay: float,
+    workers: int,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Process multiple URLs concurrently and return a DataFrame of results."""
+    results: list[dict] = []
+    total_tasks = len(urls) * len(strategies)
+    completed_count = 0
+    lock = threading.Lock()
+    semaphore = threading.Semaphore(1)  # rate limiter
+    last_request_time = [0.0]  # mutable for closure
+
+    def process_single(url: str, strategy: str) -> dict:
+        nonlocal completed_count
+        # Rate limiting
+        with semaphore:
+            now = time.monotonic()
+            elapsed = now - last_request_time[0]
+            if elapsed < delay:
+                time.sleep(delay - elapsed)
+            last_request_time[0] = time.monotonic()
+
+        try:
+            if verbose:
+                print(f"  Fetching {url} ({strategy})...", file=sys.stderr)
+            response = fetch_pagespeed_result(url, strategy, api_key, categories)
+            metrics = extract_metrics(response, url, strategy)
+        except PageSpeedError as exc:
+            metrics = {
+                "url": url,
+                "strategy": strategy,
+                "error": str(exc),
+            }
+            print(f"  Error: {exc}", file=sys.stderr)
+
+        with lock:
+            completed_count += 1
+            print(
+                f"\r  Progress: {completed_count}/{total_tasks}",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        return metrics
+
+    effective_workers = min(workers, total_tasks)
+    if effective_workers <= 1:
+        # Sequential processing
+        for url in urls:
+            for strategy in strategies:
+                result = process_single(url, strategy)
+                results.append(result)
+    else:
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            futures = {}
+            for url in urls:
+                for strategy in strategies:
+                    future = executor.submit(process_single, url, strategy)
+                    futures[future] = (url, strategy)
+
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+
+    print("", file=sys.stderr)  # newline after progress
+    return pd.DataFrame(results)
+
+
+# ---------------------------------------------------------------------------
+# Output Formats
+# ---------------------------------------------------------------------------
+
+
+def generate_output_path(output_dir: str, strategy: str, extension: str) -> Path:
+    """Generate a timestamped output file path."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dir_path = Path(output_dir)
+    dir_path.mkdir(parents=True, exist_ok=True)
+    return dir_path / f"{timestamp}-{strategy}.{extension}"
+
+
+def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
+    """Write DataFrame to CSV. Returns the file path."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    dataframe.to_csv(output_path, index=False)
+    return str(output_path)
+
+
+def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
+    """Write DataFrame to structured JSON with metadata. Returns the file path."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    strategies_present = dataframe["strategy"].unique().tolist() if "strategy" in dataframe.columns else []
+
+    results = []
+    for _, row in dataframe.iterrows():
+        record = {"url": row.get("url"), "strategy": row.get("strategy"), "error": row.get("error")}
+
+        # Performance score
+        record["performance_score"] = row.get("performance_score")
+
+        # Additional scores
+        for score_key in ("accessibility_score", "best_practices_score", "seo_score"):
+            if score_key in row and pd.notna(row[score_key]):
+                record[score_key] = row[score_key]
+
+        # Lab metrics
+        lab = {}
+        for _, col_name in LAB_METRICS:
+            if col_name in row and pd.notna(row[col_name]):
+                lab[col_name] = row[col_name]
+        if lab:
+            record["lab_metrics"] = lab
+
+        # Field metrics
+        field = {}
+        for _, value_col, category_col in FIELD_METRICS:
+            if value_col in row and pd.notna(row[value_col]):
+                field[value_col] = row[value_col]
+            if category_col in row and pd.notna(row[category_col]):
+                field[category_col] = row[category_col]
+        if field:
+            record["field_metrics"] = field
+
+        record["fetch_time"] = row.get("fetch_time")
+        results.append(record)
+
+    output_data = {
+        "metadata": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_urls": len(dataframe["url"].unique()) if "url" in dataframe.columns else 0,
+            "strategies": strategies_present,
+            "tool_version": __version__,
+        },
+        "results": results,
+    }
+
+    with open(output_path, "w") as fh:
+        json.dump(output_data, fh, indent=2, default=str)
+
+    return str(output_path)
+
+
+def format_terminal_table(metrics: dict | list[dict]) -> str:
+    """Format metrics as an aligned terminal table."""
+    if isinstance(metrics, dict):
+        metrics_list = [metrics]
+    else:
+        metrics_list = metrics
+
+    lines = []
+    for row_data in metrics_list:
+        url = row_data.get("url", "?")
+        strategy = row_data.get("strategy", "?")
+        error = row_data.get("error")
+
+        lines.append(f"\n{'=' * 60}")
+        lines.append(f"  URL:      {url}")
+        lines.append(f"  Strategy: {strategy}")
+
+        if error:
+            lines.append(f"  Error:    {error}")
+            lines.append(f"{'=' * 60}")
+            continue
+
+        lines.append(f"{'=' * 60}")
+
+        # Performance score
+        score = row_data.get("performance_score")
+        if score is not None:
+            score_indicator = "GOOD" if score >= 90 else ("NEEDS WORK" if score >= 50 else "POOR")
+            lines.append(f"  Performance Score: {score}/100 ({score_indicator})")
+        lines.append("")
+
+        # Additional category scores
+        for label, key in [("Accessibility", "accessibility_score"), ("Best Practices", "best_practices_score"), ("SEO", "seo_score")]:
+            val = row_data.get(key)
+            if val is not None:
+                lines.append(f"  {label}: {val}/100")
+
+        # Lab metrics
+        lines.append("  --- Lab Data ---")
+        lab_display = [
+            ("  First Contentful Paint", "lab_fcp_ms", "ms"),
+            ("  Largest Contentful Paint", "lab_lcp_ms", "ms"),
+            ("  Cumulative Layout Shift", "lab_cls", ""),
+            ("  Speed Index", "lab_speed_index_ms", "ms"),
+            ("  Total Blocking Time", "lab_tbt_ms", "ms"),
+            ("  Time to Interactive", "lab_tti_ms", "ms"),
+        ]
+        for label, key, unit in lab_display:
+            val = row_data.get(key)
+            if val is not None:
+                suffix = f" {unit}" if unit else ""
+                lines.append(f"  {label:.<36} {val}{suffix}")
+
+        # Field metrics
+        has_field = any(row_data.get(vc) is not None for _, vc, _ in FIELD_METRICS)
+        if has_field:
+            lines.append("")
+            lines.append("  --- Field Data (CrUX) ---")
+            field_display = [
+                ("  FCP", "field_fcp_ms", "field_fcp_category", "ms"),
+                ("  LCP", "field_lcp_ms", "field_lcp_category", "ms"),
+                ("  CLS", "field_cls", "field_cls_category", ""),
+                ("  INP", "field_inp_ms", "field_inp_category", "ms"),
+                ("  FID", "field_fid_ms", "field_fid_category", "ms"),
+                ("  TTFB", "field_ttfb_ms", "field_ttfb_category", "ms"),
+            ]
+            for label, val_key, cat_key, unit in field_display:
+                val = row_data.get(val_key)
+                cat = row_data.get(cat_key)
+                if val is not None:
+                    suffix = f" {unit}" if unit else ""
+                    cat_str = f" [{cat}]" if cat else ""
+                    lines.append(f"  {label:.<36} {val}{suffix}{cat_str}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Report Loading (for compare / report subcommands)
+# ---------------------------------------------------------------------------
+
+
+def load_report(file_path: str) -> pd.DataFrame:
+    """Load a report from CSV or JSON into a DataFrame."""
+    path = Path(file_path)
+    if not path.is_file():
+        print(f"Error: report file not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    elif suffix == ".json":
+        with open(path) as fh:
+            data = json.load(fh)
+        if "results" in data:
+            # Structured JSON format — flatten lab_metrics and field_metrics
+            rows = []
+            for result in data["results"]:
+                flat_row = {
+                    "url": result.get("url"),
+                    "strategy": result.get("strategy"),
+                    "error": result.get("error"),
+                    "performance_score": result.get("performance_score"),
+                    "fetch_time": result.get("fetch_time"),
+                }
+                for key in ("accessibility_score", "best_practices_score", "seo_score"):
+                    if key in result:
+                        flat_row[key] = result[key]
+                for key, value in result.get("lab_metrics", {}).items():
+                    flat_row[key] = value
+                for key, value in result.get("field_metrics", {}).items():
+                    flat_row[key] = value
+                rows.append(flat_row)
+            return pd.DataFrame(rows)
+        else:
+            return pd.DataFrame(data)
+    else:
+        print(f"Error: unsupported file format '{suffix}'. Use .csv or .json.", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: quick-check
+# ---------------------------------------------------------------------------
+
+
+def cmd_quick_check(args: argparse.Namespace) -> None:
+    """Run a quick single-URL spot check and print results to stdout."""
+    url = validate_url(args.url)
+    if not url:
+        print(f"Error: invalid URL: {args.url}", file=sys.stderr)
+        sys.exit(1)
+
+    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+
+    results = []
+    for strategy in strategies:
+        print(f"Fetching {url} ({strategy})...", file=sys.stderr)
+        try:
+            response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
+            metrics = extract_metrics(response, url, strategy)
+            results.append(metrics)
+        except PageSpeedError as exc:
+            results.append({"url": url, "strategy": strategy, "error": str(exc)})
+
+    print(format_terminal_table(results))
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: audit
+# ---------------------------------------------------------------------------
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Run a full batch analysis and write report files."""
+    urls = load_urls(
+        getattr(args, "urls", []),
+        getattr(args, "file", None),
+    )
+    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+
+    print(f"Auditing {len(urls)} URL(s) with strategy: {args.strategy}", file=sys.stderr)
+    dataframe = process_urls(
+        urls=urls,
+        api_key=args.api_key,
+        strategies=strategies,
+        categories=categories,
+        delay=args.delay,
+        workers=args.workers,
+        verbose=args.verbose,
+    )
+
+    strategy_label = args.strategy if args.strategy != "both" else "both"
+    output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
+    output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
+    explicit_output = getattr(args, "output", None)
+
+    written_files = []
+
+    if output_format in ("csv", "both"):
+        if explicit_output:
+            csv_path = Path(explicit_output).with_suffix(".csv")
+        else:
+            csv_path = generate_output_path(output_dir, strategy_label, "csv")
+        path_str = output_csv(dataframe, csv_path)
+        written_files.append(path_str)
+
+    if output_format in ("json", "both"):
+        if explicit_output:
+            json_path = Path(explicit_output).with_suffix(".json")
+        else:
+            json_path = generate_output_path(output_dir, strategy_label, "json")
+        path_str = output_json(dataframe, json_path)
+        written_files.append(path_str)
+
+    print(f"\nResults written to:", file=sys.stderr)
+    for filepath in written_files:
+        print(f"  {filepath}", file=sys.stderr)
+
+    # Print summary
+    if "performance_score" in dataframe.columns:
+        scores = dataframe["performance_score"].dropna()
+        if len(scores) > 0:
+            print(f"\nSummary:", file=sys.stderr)
+            print(f"  URLs analyzed: {len(dataframe['url'].unique())}", file=sys.stderr)
+            print(f"  Avg score:     {scores.mean():.0f}", file=sys.stderr)
+            print(f"  Min score:     {scores.min():.0f}", file=sys.stderr)
+            print(f"  Max score:     {scores.max():.0f}", file=sys.stderr)
+
+    errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
+    if len(errors) > 0:
+        print(f"  Errors:        {len(errors)}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: compare
+# ---------------------------------------------------------------------------
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    """Compare two reports and highlight regressions/improvements."""
+    before_df = load_report(args.before)
+    after_df = load_report(args.after)
+
+    threshold = args.threshold
+
+    # Merge on url + strategy
+    merge_keys = ["url", "strategy"]
+    merged = pd.merge(
+        before_df,
+        after_df,
+        on=merge_keys,
+        suffixes=("_before", "_after"),
+        how="outer",
+        indicator=True,
+    )
+
+    score_columns = ["performance_score"]
+    for extra in ("accessibility_score", "best_practices_score", "seo_score"):
+        if f"{extra}_before" in merged.columns or f"{extra}_after" in merged.columns:
+            score_columns.append(extra)
+
+    print(f"\n{'URL':<50} {'Strategy':<10}", end="")
+    for col in score_columns:
+        label = col.replace("_score", "").replace("_", " ").title()
+        print(f" {'Before':>8} {'After':>8} {'Delta':>8}", end="")
+    print()
+    print("-" * (60 + len(score_columns) * 26))
+
+    for _, row in merged.iterrows():
+        url = row["url"]
+        strategy = row.get("strategy", "?")
+        # Truncate URL for display
+        display_url = (url[:47] + "...") if len(str(url)) > 50 else url
+        print(f"{display_url:<50} {strategy:<10}", end="")
+
+        for col in score_columns:
+            before_col = f"{col}_before"
+            after_col = f"{col}_after"
+            before_val = row.get(before_col)
+            after_val = row.get(after_col)
+
+            if pd.isna(before_val) and pd.isna(after_val):
+                print(f" {'N/A':>8} {'N/A':>8} {'':>8}", end="")
+            elif pd.isna(before_val):
+                print(f" {'N/A':>8} {after_val:>8.0f} {'NEW':>8}", end="")
+            elif pd.isna(after_val):
+                print(f" {before_val:>8.0f} {'N/A':>8} {'GONE':>8}", end="")
+            else:
+                delta = after_val - before_val
+                delta_str = f"{delta:+.0f}"
+                if abs(delta) >= threshold:
+                    if delta < 0:
+                        delta_str = f"{delta_str} !!"  # regression
+                    else:
+                        delta_str = f"{delta_str} ++"  # improvement
+                print(f" {before_val:>8.0f} {after_val:>8.0f} {delta_str:>8}", end="")
+
+        print()
+
+    # Summary
+    if "performance_score_before" in merged.columns and "performance_score_after" in merged.columns:
+        before_scores = merged["performance_score_before"].dropna()
+        after_scores = merged["performance_score_after"].dropna()
+        if len(before_scores) > 0 and len(after_scores) > 0:
+            print(f"\nSummary:")
+            print(f"  Before avg: {before_scores.mean():.1f}")
+            print(f"  After avg:  {after_scores.mean():.1f}")
+            delta_avg = after_scores.mean() - before_scores.mean()
+            direction = "improvement" if delta_avg > 0 else "regression" if delta_avg < 0 else "no change"
+            print(f"  Change:     {delta_avg:+.1f} ({direction})")
+
+    regressions = 0
+    improvements = 0
+    if "performance_score_before" in merged.columns and "performance_score_after" in merged.columns:
+        for _, row in merged.iterrows():
+            before_val = row.get("performance_score_before")
+            after_val = row.get("performance_score_after")
+            if pd.notna(before_val) and pd.notna(after_val):
+                delta = after_val - before_val
+                if delta <= -threshold:
+                    regressions += 1
+                elif delta >= threshold:
+                    improvements += 1
+
+    print(f"  Regressions (>= {threshold}% drop): {regressions}")
+    print(f"  Improvements (>= {threshold}% gain): {improvements}")
+    print(f"  Threshold: {threshold}%")
+    print(f"\n  Legend: !! = regression, ++ = improvement")
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: report
+# ---------------------------------------------------------------------------
+
+
+def generate_html_report(dataframe: pd.DataFrame) -> str:
+    """Generate a self-contained HTML dashboard from results data."""
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    total_urls = len(dataframe["url"].unique()) if "url" in dataframe.columns else 0
+    strategies_present = dataframe["strategy"].unique().tolist() if "strategy" in dataframe.columns else []
+    has_both_strategies = len(strategies_present) > 1
+
+    # Compute summary stats
+    scores = dataframe["performance_score"].dropna() if "performance_score" in dataframe.columns else pd.Series(dtype=float)
+    avg_score = scores.mean() if len(scores) > 0 else 0
+    best_score = scores.max() if len(scores) > 0 else 0
+    worst_score = scores.min() if len(scores) > 0 else 0
+    error_count = len(dataframe[dataframe["error"].notna()]) if "error" in dataframe.columns else 0
+
+    def score_color(score):
+        if pd.isna(score):
+            return "#999"
+        if score >= 90:
+            return "#0cce6b"
+        if score >= 50:
+            return "#ffa400"
+        return "#ff4e42"
+
+    def score_class(score):
+        if pd.isna(score):
+            return "na"
+        if score >= 90:
+            return "good"
+        if score >= 50:
+            return "needs-work"
+        return "poor"
+
+    def cwv_status(value, metric_key):
+        if pd.isna(value) or value is None or metric_key not in CWV_THRESHOLDS:
+            return "na", "N/A"
+        thresholds = CWV_THRESHOLDS[metric_key]
+        if value <= thresholds["good"]:
+            return "good", "Pass"
+        if value <= thresholds["poor"]:
+            return "needs-work", "Needs Work"
+        return "poor", "Fail"
+
+    # Build table rows
+    table_rows = []
+    for _, row in dataframe.iterrows():
+        url = row.get("url", "")
+        strategy = row.get("strategy", "")
+        perf_score = row.get("performance_score")
+        error = row.get("error")
+
+        if pd.notna(error) and error:
+            table_rows.append(f"""
+            <tr>
+                <td class="url-cell" title="{url}">{url}</td>
+                <td>{strategy}</td>
+                <td colspan="8" class="error-cell">Error: {error}</td>
+            </tr>""")
+            continue
+
+        perf_class = score_class(perf_score)
+        perf_display = f"{perf_score:.0f}" if pd.notna(perf_score) else "N/A"
+
+        # CWV cells
+        cwv_cells = ""
+        for metric_key, display_name in [("lab_lcp_ms", "LCP"), ("lab_cls", "CLS"), ("lab_tbt_ms", "TBT")]:
+            val = row.get(metric_key)
+            status_class, status_label = cwv_status(val, metric_key)
+            if pd.notna(val) and val is not None:
+                thresholds = CWV_THRESHOLDS.get(metric_key, {})
+                unit = thresholds.get("unit", "")
+                if metric_key == "lab_cls":
+                    val_display = f"{val:.3f}"
+                else:
+                    val_display = f"{val:,.0f}{unit}"
+                cwv_cells += f'<td class="cwv-{status_class}" title="{status_label}">{val_display}</td>'
+            else:
+                cwv_cells += '<td class="cwv-na">N/A</td>'
+
+        # Lab metrics for display
+        fcp = row.get("lab_fcp_ms")
+        si = row.get("lab_speed_index_ms")
+        tti = row.get("lab_tti_ms")
+        fcp_display = f"{fcp:,.0f}ms" if pd.notna(fcp) else "N/A"
+        si_display = f"{si:,.0f}ms" if pd.notna(si) else "N/A"
+        tti_display = f"{tti:,.0f}ms" if pd.notna(tti) else "N/A"
+
+        table_rows.append(f"""
+            <tr>
+                <td class="url-cell" title="{url}">{url}</td>
+                <td>{strategy}</td>
+                <td class="score-cell {perf_class}">{perf_display}</td>
+                {cwv_cells}
+                <td>{fcp_display}</td>
+                <td>{si_display}</td>
+                <td>{tti_display}</td>
+            </tr>""")
+
+    table_rows_html = "\n".join(table_rows)
+
+    # Build bar chart
+    bar_chart_items = []
+    for _, row in dataframe.iterrows():
+        score = row.get("performance_score")
+        if pd.isna(score):
+            continue
+        url = row.get("url", "")
+        strategy = row.get("strategy", "")
+        color = score_color(score)
+        label = f"{url} ({strategy})" if has_both_strategies else url
+        # Truncate label for display
+        display_label = (label[:60] + "...") if len(label) > 63 else label
+        bar_chart_items.append(f"""
+            <div class="bar-row">
+                <div class="bar-label" title="{label}">{display_label}</div>
+                <div class="bar-track">
+                    <div class="bar-fill" style="width: {score}%; background: {color};">{score:.0f}</div>
+                </div>
+            </div>""")
+    bar_chart_html = "\n".join(bar_chart_items)
+
+    # Field data section
+    field_section = ""
+    has_field_data = any(
+        dataframe[vc].notna().any()
+        for _, vc, _ in FIELD_METRICS
+        if vc in dataframe.columns
+    )
+    if has_field_data:
+        field_rows = []
+        for _, row in dataframe.iterrows():
+            url = row.get("url", "")
+            strategy = row.get("strategy", "")
+            cells = ""
+            for _, val_col, cat_col in FIELD_METRICS:
+                val = row.get(val_col)
+                cat = row.get(cat_col)
+                if pd.notna(val) and val is not None:
+                    cat_class = str(cat).lower().replace("_", "-") if pd.notna(cat) else "na"
+                    cat_display = str(cat) if pd.notna(cat) else ""
+                    if "cls" in val_col:
+                        cells += f'<td class="field-{cat_class}">{val:.3f} <small>{cat_display}</small></td>'
+                    else:
+                        cells += f'<td class="field-{cat_class}">{val:,.0f}ms <small>{cat_display}</small></td>'
+                else:
+                    cells += '<td class="field-na">N/A</td>'
+            field_rows.append(f"""
+                <tr>
+                    <td class="url-cell" title="{url}">{url}</td>
+                    <td>{strategy}</td>
+                    {cells}
+                </tr>""")
+        field_rows_html = "\n".join(field_rows)
+        field_section = f"""
+        <h2>Field Data (CrUX)</h2>
+        <table class="data-table sortable" id="field-table">
+            <thead>
+                <tr>
+                    <th onclick="sortTable('field-table', 0)">URL</th>
+                    <th onclick="sortTable('field-table', 1)">Strategy</th>
+                    <th onclick="sortTable('field-table', 2)">FCP</th>
+                    <th onclick="sortTable('field-table', 3)">LCP</th>
+                    <th onclick="sortTable('field-table', 4)">CLS</th>
+                    <th onclick="sortTable('field-table', 5)">INP</th>
+                    <th onclick="sortTable('field-table', 6)">FID</th>
+                    <th onclick="sortTable('field-table', 7)">TTFB</th>
+                </tr>
+            </thead>
+            <tbody>
+                {field_rows_html}
+            </tbody>
+        </table>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PageSpeed Insights Report - {generated_at}</title>
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 20px; max-width: 1400px; margin: 0 auto; }}
+    h1 {{ font-size: 1.5rem; margin-bottom: 5px; }}
+    h2 {{ font-size: 1.2rem; margin: 30px 0 15px; color: #555; }}
+    .meta {{ color: #888; font-size: 0.85rem; margin-bottom: 25px; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }}
+    .card {{ background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }}
+    .card .value {{ font-size: 2rem; font-weight: 700; }}
+    .card .label {{ font-size: 0.8rem; color: #888; margin-top: 5px; }}
+    .card .value.good {{ color: #0cce6b; }}
+    .card .value.needs-work {{ color: #ffa400; }}
+    .card .value.poor {{ color: #ff4e42; }}
+    .data-table {{ width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+    .data-table th {{ background: #f8f9fa; padding: 10px 12px; text-align: left; font-size: 0.8rem; text-transform: uppercase; color: #666; cursor: pointer; user-select: none; white-space: nowrap; }}
+    .data-table th:hover {{ background: #e9ecef; }}
+    .data-table td {{ padding: 10px 12px; border-top: 1px solid #eee; font-size: 0.9rem; }}
+    .url-cell {{ max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .score-cell {{ font-weight: 700; text-align: center; min-width: 60px; }}
+    .score-cell.good {{ color: #0cce6b; }}
+    .score-cell.needs-work {{ color: #ffa400; }}
+    .score-cell.poor {{ color: #ff4e42; }}
+    .score-cell.na {{ color: #999; }}
+    .cwv-good {{ color: #0cce6b; font-weight: 600; }}
+    .cwv-needs-work {{ color: #ffa400; font-weight: 600; }}
+    .cwv-poor {{ color: #ff4e42; font-weight: 600; }}
+    .cwv-na {{ color: #999; }}
+    .field-fast {{ color: #0cce6b; }}
+    .field-average {{ color: #ffa400; }}
+    .field-slow {{ color: #ff4e42; }}
+    .field-na {{ color: #999; }}
+    .error-cell {{ color: #ff4e42; font-style: italic; }}
+    .bar-row {{ display: flex; align-items: center; margin-bottom: 8px; }}
+    .bar-label {{ width: 300px; min-width: 200px; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 10px; }}
+    .bar-track {{ flex: 1; background: #eee; border-radius: 4px; height: 24px; position: relative; }}
+    .bar-fill {{ height: 100%; border-radius: 4px; color: #fff; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; min-width: 30px; transition: width 0.3s; }}
+    .chart-container {{ background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+    .legend {{ display: flex; gap: 20px; margin-top: 15px; font-size: 0.8rem; }}
+    .legend-item {{ display: flex; align-items: center; gap: 5px; }}
+    .legend-dot {{ width: 12px; height: 12px; border-radius: 50%; }}
+    footer {{ margin-top: 40px; padding-top: 15px; border-top: 1px solid #ddd; color: #999; font-size: 0.75rem; text-align: center; }}
+</style>
+</head>
+<body>
+<h1>PageSpeed Insights Report</h1>
+<p class="meta">Generated: {generated_at} | Tool v{__version__}</p>
+
+<div class="cards">
+    <div class="card"><div class="value">{total_urls}</div><div class="label">URLs Analyzed</div></div>
+    <div class="card"><div class="value {score_class(avg_score)}">{avg_score:.0f}</div><div class="label">Average Score</div></div>
+    <div class="card"><div class="value {score_class(best_score)}">{best_score:.0f}</div><div class="label">Best Score</div></div>
+    <div class="card"><div class="value {score_class(worst_score)}">{worst_score:.0f}</div><div class="label">Worst Score</div></div>
+    {"<div class='card'><div class='value poor'>" + str(error_count) + "</div><div class='label'>Errors</div></div>" if error_count > 0 else ""}
+</div>
+
+<h2>Performance Scores</h2>
+<div class="chart-container">
+    {bar_chart_html}
+    <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background: #0cce6b;"></div> Good (90-100)</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #ffa400;"></div> Needs Work (50-89)</div>
+        <div class="legend-item"><div class="legend-dot" style="background: #ff4e42;"></div> Poor (0-49)</div>
+    </div>
+</div>
+
+<h2>Detailed Results</h2>
+<table class="data-table sortable" id="results-table">
+    <thead>
+        <tr>
+            <th onclick="sortTable('results-table', 0)">URL</th>
+            <th onclick="sortTable('results-table', 1)">Strategy</th>
+            <th onclick="sortTable('results-table', 2)">Score</th>
+            <th onclick="sortTable('results-table', 3)">LCP</th>
+            <th onclick="sortTable('results-table', 4)">CLS</th>
+            <th onclick="sortTable('results-table', 5)">TBT</th>
+            <th onclick="sortTable('results-table', 6)">FCP</th>
+            <th onclick="sortTable('results-table', 7)">SI</th>
+            <th onclick="sortTable('results-table', 8)">TTI</th>
+        </tr>
+    </thead>
+    <tbody>
+        {table_rows_html}
+    </tbody>
+</table>
+
+{field_section}
+
+<footer>
+    Generated by PageSpeed Insights Batch Analysis Tool v{__version__}
+</footer>
+
+<script>
+function sortTable(tableId, colIdx) {{
+    const table = document.getElementById(tableId);
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const header = table.querySelectorAll('th')[colIdx];
+    const ascending = header.dataset.sort !== 'asc';
+    header.dataset.sort = ascending ? 'asc' : 'desc';
+
+    rows.sort((a, b) => {{
+        const aText = a.cells[colIdx] ? a.cells[colIdx].textContent.trim() : '';
+        const bText = b.cells[colIdx] ? b.cells[colIdx].textContent.trim() : '';
+        const aNum = parseFloat(aText.replace(/[^\\d.-]/g, ''));
+        const bNum = parseFloat(bText.replace(/[^\\d.-]/g, ''));
+        if (!isNaN(aNum) && !isNaN(bNum)) {{
+            return ascending ? aNum - bNum : bNum - aNum;
+        }}
+        return ascending ? aText.localeCompare(bText) : bText.localeCompare(aText);
+    }});
+
+    rows.forEach(row => tbody.appendChild(row));
+}}
+</script>
+</body>
+</html>"""
+    return html
+
+
+def cmd_report(args: argparse.Namespace) -> None:
+    """Generate a visual HTML report from a results file."""
+    dataframe = load_report(args.input_file)
+
+    explicit_output = getattr(args, "output", None)
+    output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
+
+    if explicit_output:
+        html_path = Path(explicit_output)
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dir_path = Path(output_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        html_path = dir_path / f"{timestamp}-report.html"
+
+    html_content = generate_html_report(dataframe)
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html_content)
+    print(f"HTML report written to: {html_path}", file=sys.stderr)
+
+    if getattr(args, "open_browser", False):
+        webbrowser.open(html_path.resolve().as_uri())
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: run
+# ---------------------------------------------------------------------------
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    """Low-level direct access — same internals as audit."""
+    cmd_audit(args)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    parser = build_argument_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    # Load config
+    config_path = Path(args.config) if args.config else discover_config_path()
+    config = load_config(config_path)
+
+    # Apply profile and config defaults
+    profile_name = getattr(args, "profile", None)
+    args = apply_profile(args, config, profile_name)
+
+    # Dispatch to subcommand
+    commands = {
+        "quick-check": cmd_quick_check,
+        "audit": cmd_audit,
+        "compare": cmd_compare,
+        "report": cmd_report,
+        "run": cmd_run,
+    }
+
+    handler = commands.get(args.command)
+    if handler:
+        handler(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
