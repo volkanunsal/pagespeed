@@ -1345,18 +1345,31 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+    runs = getattr(args, "runs", 1)
+    if runs < 1:
+        print("Error: --runs must be at least 1", file=sys.stderr)
+        sys.exit(1)
 
     results = []
     for strategy in strategies:
-        print(f"Fetching {url} ({strategy})...", file=sys.stderr)
-        try:
-            response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
-            metrics = extract_metrics(response, url, strategy)
-            results.append(metrics)
-        except PageSpeedError as exc:
-            results.append({"url": url, "strategy": strategy, "error": str(exc)})
+        run_metrics = []
+        for run_number in range(1, runs + 1):
+            run_label = f" [run {run_number}/{runs}]" if runs > 1 else ""
+            print(f"Fetching {url} ({strategy}){run_label}...", file=sys.stderr)
+            try:
+                response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
+                metrics = extract_metrics(response, url, strategy)
+                run_metrics.append(metrics)
+            except PageSpeedError as exc:
+                run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
+        if runs > 1:
+            run_df = pd.DataFrame(run_metrics)
+            aggregated_df = aggregate_multi_run(run_df, runs)
+            results.append(aggregated_df.iloc[0].to_dict())
+        else:
+            results.append(run_metrics[0])
 
-    print(format_terminal_table(results))
+    print(format_terminal_table(results, show_run_metadata=(runs > 1)))
 
 
 # ---------------------------------------------------------------------------
@@ -1376,8 +1389,13 @@ def cmd_audit(args: argparse.Namespace) -> None:
     )
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+    runs = getattr(args, "runs", 1)
+    if runs < 1:
+        print("Error: --runs must be at least 1", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"Auditing {len(urls)} URL(s) with strategy: {args.strategy}", file=sys.stderr)
+    runs_label = f" x {runs} runs" if runs > 1 else ""
+    print(f"Auditing {len(urls)} URL(s) with strategy: {args.strategy}{runs_label}", file=sys.stderr)
     dataframe = process_urls(
         urls=urls,
         api_key=args.api_key,
@@ -1386,6 +1404,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         verbose=args.verbose,
+        runs=runs,
     )
 
     strategy_label = args.strategy if args.strategy != "both" else "both"
@@ -1866,9 +1885,14 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
+    runs = getattr(args, "runs", 1)
+    if runs < 1:
+        print("Error: --runs must be at least 1", file=sys.stderr)
+        sys.exit(1)
 
     # --- Phase 3: Analyze ---
-    print(f"Pipeline: analyzing {len(urls)} URL(s) with strategy: {args.strategy}", file=sys.stderr)
+    runs_label = f" x {runs} runs" if runs > 1 else ""
+    print(f"Pipeline: analyzing {len(urls)} URL(s) with strategy: {args.strategy}{runs_label}", file=sys.stderr)
     dataframe = process_urls(
         urls=urls,
         api_key=args.api_key,
@@ -1877,6 +1901,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         verbose=args.verbose,
+        runs=runs,
     )
 
     # --- Phase 4: Write data files + print summary ---
