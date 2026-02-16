@@ -608,6 +608,24 @@ class TestBuildArgumentParser(unittest.TestCase):
         self.assertEqual(args.output_format, "csv")
         self.assertEqual(args.output_dir, "./reports")
 
+    def test_pipeline_parses_positional_source(self):
+        args = self.parser.parse_args(["pipeline", "https://example.com/sitemap.xml"])
+        self.assertEqual(args.command, "pipeline")
+        self.assertEqual(args.source, ["https://example.com/sitemap.xml"])
+
+    def test_pipeline_flags(self):
+        args = self.parser.parse_args(["pipeline", "https://example.com", "--open", "--no-report"])
+        self.assertTrue(args.open_browser)
+        self.assertTrue(args.no_report)
+
+    def test_pipeline_defaults(self):
+        args = self.parser.parse_args(["pipeline"])
+        self.assertEqual(args.source, [])
+        self.assertFalse(args.open_browser)
+        self.assertFalse(args.no_report)
+        self.assertEqual(args.strategy, "mobile")
+        self.assertEqual(args.output_format, "csv")
+
 
 # ===================================================================
 # 10. TestParseSitemapXml
@@ -1156,6 +1174,259 @@ class TestLoadReport(unittest.TestCase):
                 loaded.iloc[0]["performance_score"],
                 df.iloc[0]["performance_score"],
             )
+
+
+# ===================================================================
+# 19. TestLooksLikeSitemap
+# ===================================================================
+
+
+class TestLooksLikeSitemap(unittest.TestCase):
+    """Tests for _looks_like_sitemap() — heuristic sitemap detection."""
+
+    def test_xml_extension(self):
+        self.assertTrue(pst._looks_like_sitemap("https://example.com/sitemap.xml"))
+
+    def test_xml_gz_extension(self):
+        self.assertTrue(pst._looks_like_sitemap("https://example.com/sitemap.xml.gz"))
+
+    def test_url_containing_sitemap(self):
+        self.assertTrue(pst._looks_like_sitemap("https://example.com/sitemap_index"))
+
+    def test_plain_url_not_detected(self):
+        self.assertFalse(pst._looks_like_sitemap("https://example.com"))
+
+    def test_local_xml_file_detected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as fh:
+            fh.write('<?xml version="1.0"?>\n<urlset><url><loc>https://a.com</loc></url></urlset>')
+            fh.flush()
+            result = pst._looks_like_sitemap(fh.name)
+        os.unlink(fh.name)
+        self.assertTrue(result)
+
+    def test_non_xml_local_file_not_detected(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as fh:
+            fh.write("https://example.com\nhttps://other.com\n")
+            fh.flush()
+            result = pst._looks_like_sitemap(fh.name)
+        os.unlink(fh.name)
+        self.assertFalse(result)
+
+    def test_case_insensitive_sitemap(self):
+        self.assertTrue(pst._looks_like_sitemap("https://example.com/Sitemap.html"))
+
+    def test_nonexistent_local_path_not_detected(self):
+        self.assertFalse(pst._looks_like_sitemap("/tmp/nonexistent_xyzzy_42.txt"))
+
+
+# ===================================================================
+# 20. TestWriteDataFiles
+# ===================================================================
+
+
+class TestWriteDataFiles(unittest.TestCase):
+    """Tests for _write_data_files()."""
+
+    def setUp(self):
+        self.dataframe = _sample_dataframe()
+
+    def test_csv_only_writes_one_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = pst._write_data_files(self.dataframe, "csv", tmpdir, None, "mobile")
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].endswith(".csv"))
+            self.assertTrue(Path(paths[0]).exists())
+
+    def test_json_only_writes_one_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = pst._write_data_files(self.dataframe, "json", tmpdir, None, "mobile")
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].endswith(".json"))
+            self.assertTrue(Path(paths[0]).exists())
+
+    def test_both_writes_two_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = pst._write_data_files(self.dataframe, "both", tmpdir, None, "mobile")
+            self.assertEqual(len(paths), 2)
+            extensions = {Path(p).suffix for p in paths}
+            self.assertEqual(extensions, {".csv", ".json"})
+
+    def test_explicit_output_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit = os.path.join(tmpdir, "my_report.csv")
+            paths = pst._write_data_files(self.dataframe, "both", tmpdir, explicit, "mobile")
+            self.assertEqual(len(paths), 2)
+            # Should use explicit path with suffix swapped
+            basenames = {Path(p).name for p in paths}
+            self.assertIn("my_report.csv", basenames)
+            self.assertIn("my_report.json", basenames)
+
+    @patch("pagespeed_insights_tool.generate_output_path")
+    def test_auto_named_via_generate_output_path(self, mock_gen):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "auto-mobile.csv"
+            mock_gen.return_value = csv_path
+            paths = pst._write_data_files(self.dataframe, "csv", tmpdir, None, "mobile")
+            mock_gen.assert_called_once_with(tmpdir, "mobile", "csv")
+            self.assertEqual(len(paths), 1)
+
+
+# ===================================================================
+# 21. TestPrintAuditSummary
+# ===================================================================
+
+
+class TestPrintAuditSummary(unittest.TestCase):
+    """Tests for _print_audit_summary()."""
+
+    def test_prints_score_stats(self):
+        dataframe = _sample_dataframe()
+        with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+            pst._print_audit_summary(dataframe)
+        output = mock_stderr.getvalue()
+        self.assertIn("Avg score:", output)
+        self.assertIn("Min score:", output)
+        self.assertIn("Max score:", output)
+
+    def test_prints_error_count(self):
+        rows = [
+            {"url": "https://a.com", "strategy": "mobile", "error": "HTTP 500", "performance_score": None},
+            {"url": "https://b.com", "strategy": "mobile", "error": None, "performance_score": 90},
+        ]
+        dataframe = pd.DataFrame(rows)
+        with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+            pst._print_audit_summary(dataframe)
+        output = mock_stderr.getvalue()
+        self.assertIn("Errors:", output)
+        self.assertIn("1", output)
+
+    def test_no_output_without_score_column(self):
+        dataframe = pd.DataFrame([{"url": "https://a.com", "strategy": "mobile"}])
+        with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
+            pst._print_audit_summary(dataframe)
+        output = mock_stderr.getvalue()
+        self.assertEqual(output, "")
+
+
+# ===================================================================
+# 22. TestCmdPipeline
+# ===================================================================
+
+
+class TestCmdPipeline(unittest.TestCase):
+    """Integration-level tests for cmd_pipeline()."""
+
+    def _make_pipeline_args(self, **kwargs):
+        defaults = {
+            "source": [],
+            "file": None,
+            "sitemap": None,
+            "sitemap_limit": None,
+            "sitemap_filter": None,
+            "strategy": "mobile",
+            "output_format": "csv",
+            "output": None,
+            "output_dir": None,  # set per-test to tmpdir
+            "delay": 0.0,
+            "workers": 1,
+            "categories": ["performance"],
+            "verbose": False,
+            "api_key": None,
+            "open_browser": False,
+            "no_report": False,
+        }
+        defaults.update(kwargs)
+        args = argparse.Namespace(**defaults)
+        args._explicit_args = []
+        return args
+
+    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
+    @patch("pagespeed_insights_tool._print_audit_summary")
+    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
+    @patch("pagespeed_insights_tool.process_urls")
+    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
+    def test_sitemap_auto_detection(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
+        mock_process.return_value = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self._make_pipeline_args(
+                source=["https://example.com/sitemap.xml"],
+                output_dir=tmpdir,
+            )
+            pst.cmd_pipeline(args)
+        # Single .xml arg should route to sitemap param, not url_args
+        mock_load.assert_called_once()
+        call_kwargs = mock_load.call_args
+        self.assertEqual(call_kwargs[0][0], [])  # url_args empty
+        self.assertEqual(call_kwargs[1]["sitemap"], "https://example.com/sitemap.xml")
+
+    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
+    @patch("pagespeed_insights_tool._print_audit_summary")
+    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
+    @patch("pagespeed_insights_tool.process_urls")
+    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
+    def test_plain_url_fallback(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
+        mock_process.return_value = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self._make_pipeline_args(
+                source=["https://example.com"],
+                output_dir=tmpdir,
+            )
+            pst.cmd_pipeline(args)
+        mock_load.assert_called_once()
+        call_kwargs = mock_load.call_args
+        self.assertEqual(call_kwargs[0][0], ["https://example.com"])  # url_args populated
+        self.assertIsNone(call_kwargs[1]["sitemap"])
+
+    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
+    @patch("pagespeed_insights_tool._print_audit_summary")
+    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
+    @patch("pagespeed_insights_tool.process_urls")
+    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
+    def test_explicit_sitemap_flag_overrides(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
+        mock_process.return_value = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self._make_pipeline_args(
+                source=["https://example.com"],
+                sitemap="https://example.com/sitemap.xml",
+                output_dir=tmpdir,
+            )
+            pst.cmd_pipeline(args)
+        mock_load.assert_called_once()
+        call_kwargs = mock_load.call_args
+        self.assertEqual(call_kwargs[1]["sitemap"], "https://example.com/sitemap.xml")
+
+    @patch("pagespeed_insights_tool._print_audit_summary")
+    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
+    @patch("pagespeed_insights_tool.process_urls")
+    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
+    def test_no_report_skips_html(self, mock_load, mock_process, mock_write, mock_summary):
+        mock_process.return_value = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self._make_pipeline_args(
+                source=["https://example.com"],
+                output_dir=tmpdir,
+                no_report=True,
+            )
+            with patch("pagespeed_insights_tool.generate_html_report") as mock_html:
+                pst.cmd_pipeline(args)
+                mock_html.assert_not_called()
+
+    @patch("pagespeed_insights_tool._print_audit_summary")
+    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
+    @patch("pagespeed_insights_tool.process_urls")
+    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
+    def test_full_pipeline_writes_html(self, mock_load, mock_process, mock_write, mock_summary):
+        mock_process.return_value = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self._make_pipeline_args(
+                source=["https://example.com"],
+                output_dir=tmpdir,
+            )
+            pst.cmd_pipeline(args)
+            # HTML report file should exist in the output dir
+            html_files = list(Path(tmpdir).glob("*.html"))
+            self.assertEqual(len(html_files), 1)
+            self.assertIn("-report.html", html_files[0].name)
 
 
 if __name__ == "__main__":
