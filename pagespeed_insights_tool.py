@@ -1000,6 +1000,14 @@ def _write_data_files(
     for filepath in written_files:
         err_console.print(f"  [green]✓[/green] [cyan]{filepath}[/cyan]")
 
+    # Write errors.csv if there are any failed URLs
+    if "error" in dataframe.columns:
+        error_rows = dataframe[dataframe["error"].notna()]
+        if not error_rows.empty:
+            errors_path = generate_output_path(output_dir, "errors", "csv")
+            output_csv(error_rows[["url", "strategy", "error"]], errors_path)
+            err_console.print(f"  [yellow]⚠[/yellow]  [cyan]{errors_path}[/cyan] ({len(error_rows)} failed URL{'s' if len(error_rows) != 1 else ''})")
+
     return written_files
 
 
