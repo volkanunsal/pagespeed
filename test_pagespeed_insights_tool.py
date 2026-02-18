@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
-#   "requests",
+#   "httpx",
 #   "pandas",
 #   "rich",
 # ]
@@ -21,6 +21,7 @@ tests run fast and fully offline.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -30,7 +31,7 @@ import unittest
 from io import StringIO
 import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 from rich.console import Console
@@ -643,49 +644,48 @@ class TestBuildArgumentParser(unittest.TestCase):
 # ===================================================================
 
 
-class TestParseSitemapXml(unittest.TestCase):
+class TestParseSitemapXml(unittest.IsolatedAsyncioTestCase):
     """Tests for parse_sitemap_xml()."""
 
-    def test_namespaced_urlset(self):
-        urls = pst.parse_sitemap_xml(SAMPLE_SITEMAP_URLSET)
+    async def test_namespaced_urlset(self):
+        urls = await pst.parse_sitemap_xml(SAMPLE_SITEMAP_URLSET)
         self.assertEqual(len(urls), 3)
         self.assertEqual(urls[0], "https://example.com/page1")
 
-    def test_no_namespace_urlset(self):
-        urls = pst.parse_sitemap_xml(SAMPLE_SITEMAP_URLSET_NO_NS)
+    async def test_no_namespace_urlset(self):
+        urls = await pst.parse_sitemap_xml(SAMPLE_SITEMAP_URLSET_NO_NS)
         self.assertEqual(len(urls), 3)
         self.assertEqual(urls[0], "https://example.com/a")
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_sitemapindex_recursive_fetch(self, mock_fetch):
+    async def test_sitemapindex_recursive_fetch(self):
         child_sitemap = textwrap.dedent("""\
             <?xml version="1.0" encoding="UTF-8"?>
             <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
               <url><loc>https://example.com/from-child</loc></url>
             </urlset>
         """)
-        mock_fetch.return_value = child_sitemap
-        urls = pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX)
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = child_sitemap
+            urls = await pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX)
         self.assertEqual(mock_fetch.call_count, 2)
         self.assertEqual(len(urls), 2)  # 1 URL from each child
         self.assertEqual(urls[0], "https://example.com/from-child")
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_child_fetch_failure(self, mock_fetch):
-        import requests as real_requests
-        mock_fetch.side_effect = real_requests.RequestException("Connection error")
-        urls = pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX)
+    async def test_child_fetch_failure(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.side_effect = OSError("Connection error")
+            urls = await pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX)
         self.assertEqual(urls, [])
 
-    def test_max_depth_reached(self):
-        urls = pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX, _depth=pst.MAX_SITEMAP_DEPTH)
+    async def test_max_depth_reached(self):
+        urls = await pst.parse_sitemap_xml(SAMPLE_SITEMAP_INDEX, _depth=pst.MAX_SITEMAP_DEPTH)
         self.assertEqual(urls, [])
 
-    def test_malformed_xml(self):
-        urls = pst.parse_sitemap_xml("<not valid xml<<<")
+    async def test_malformed_xml(self):
+        urls = await pst.parse_sitemap_xml("<not valid xml<<<")
         self.assertEqual(urls, [])
 
-    def test_empty_locs_skipped(self):
+    async def test_empty_locs_skipped(self):
         xml = textwrap.dedent("""\
             <?xml version="1.0" encoding="UTF-8"?>
             <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -694,11 +694,10 @@ class TestParseSitemapXml(unittest.TestCase):
               <url><loc></loc></url>
             </urlset>
         """)
-        urls = pst.parse_sitemap_xml(xml)
+        urls = await pst.parse_sitemap_xml(xml)
         self.assertEqual(urls, ["https://example.com/valid"])
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_no_namespace_sitemapindex(self, mock_fetch):
+    async def test_no_namespace_sitemapindex(self):
         index_xml = textwrap.dedent("""\
             <?xml version="1.0" encoding="UTF-8"?>
             <sitemapindex>
@@ -711,8 +710,9 @@ class TestParseSitemapXml(unittest.TestCase):
               <url><loc>https://example.com/page</loc></url>
             </urlset>
         """)
-        mock_fetch.return_value = child_xml
-        urls = pst.parse_sitemap_xml(index_xml)
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = child_xml
+            urls = await pst.parse_sitemap_xml(index_xml)
         self.assertEqual(urls, ["https://example.com/page"])
 
 
@@ -721,38 +721,37 @@ class TestParseSitemapXml(unittest.TestCase):
 # ===================================================================
 
 
-class TestFetchSitemapUrls(unittest.TestCase):
+class TestFetchSitemapUrls(unittest.IsolatedAsyncioTestCase):
     """Tests for fetch_sitemap_urls()."""
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_basic_fetch_and_parse(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
-        urls = pst.fetch_sitemap_urls("https://example.com/sitemap.xml")
+    async def test_basic_fetch_and_parse(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
+            urls = await pst.fetch_sitemap_urls("https://example.com/sitemap.xml")
         self.assertEqual(len(urls), 3)
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_regex_filter(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
-        urls = pst.fetch_sitemap_urls("https://example.com/sitemap.xml", filter_pattern=r"page[12]$")
+    async def test_regex_filter(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
+            urls = await pst.fetch_sitemap_urls("https://example.com/sitemap.xml", filter_pattern=r"page[12]$")
         self.assertEqual(len(urls), 2)
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_limit(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
-        urls = pst.fetch_sitemap_urls("https://example.com/sitemap.xml", limit=2)
+    async def test_limit(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
+            urls = await pst.fetch_sitemap_urls("https://example.com/sitemap.xml", limit=2)
         self.assertEqual(len(urls), 2)
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_invalid_regex_returns_empty(self, mock_fetch):
-        mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
-        urls = pst.fetch_sitemap_urls("https://example.com/sitemap.xml", filter_pattern="[invalid")
+    async def test_invalid_regex_returns_empty(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = SAMPLE_SITEMAP_URLSET
+            urls = await pst.fetch_sitemap_urls("https://example.com/sitemap.xml", filter_pattern="[invalid")
         self.assertEqual(urls, [])
 
-    @patch("pagespeed_insights_tool._fetch_sitemap_content")
-    def test_fetch_failure_returns_empty(self, mock_fetch):
-        import requests as real_requests
-        mock_fetch.side_effect = real_requests.RequestException("timeout")
-        urls = pst.fetch_sitemap_urls("https://example.com/sitemap.xml")
+    async def test_fetch_failure_returns_empty(self):
+        with patch("pagespeed_insights_tool._fetch_sitemap_content", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.side_effect = OSError("timeout")
+            urls = await pst.fetch_sitemap_urls("https://example.com/sitemap.xml")
         self.assertEqual(urls, [])
 
 
@@ -761,57 +760,57 @@ class TestFetchSitemapUrls(unittest.TestCase):
 # ===================================================================
 
 
-class TestLoadUrls(unittest.TestCase):
+class TestLoadUrls(unittest.IsolatedAsyncioTestCase):
     """Tests for load_urls()."""
 
-    def test_from_args(self):
-        urls = pst.load_urls(["https://example.com"], None)
+    async def test_from_args(self):
+        urls = await pst.load_urls(["https://example.com"], None)
         self.assertEqual(urls, ["https://example.com"])
 
-    def test_from_file(self):
+    async def test_from_file(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as fh:
             fh.write("https://a.com\nhttps://b.com\n")
             fh.flush()
-            urls = pst.load_urls([], fh.name)
+            urls = await pst.load_urls([], fh.name)
         os.unlink(fh.name)
         self.assertEqual(urls, ["https://a.com", "https://b.com"])
 
-    def test_from_stdin(self):
+    async def test_from_stdin(self):
         mock_stdin = StringIO("https://stdin.com\n")
         mock_stdin.isatty = lambda: False
         with patch("sys.stdin", mock_stdin):
-            urls = pst.load_urls([], None, allow_stdin=True)
+            urls = await pst.load_urls([], None, allow_stdin=True)
         self.assertEqual(urls, ["https://stdin.com"])
 
-    @patch("pagespeed_insights_tool.fetch_sitemap_urls")
-    def test_from_sitemap(self, mock_sitemap):
-        mock_sitemap.return_value = ["https://example.com/from-sitemap"]
-        urls = pst.load_urls(["https://example.com"], None, sitemap="https://example.com/sitemap.xml")
+    async def test_from_sitemap(self):
+        with patch("pagespeed_insights_tool.fetch_sitemap_urls", new_callable=AsyncMock) as mock_sitemap:
+            mock_sitemap.return_value = ["https://example.com/from-sitemap"]
+            urls = await pst.load_urls(["https://example.com"], None, sitemap="https://example.com/sitemap.xml")
         self.assertIn("https://example.com", urls)
         self.assertIn("https://example.com/from-sitemap", urls)
 
-    def test_deduplication(self):
-        urls = pst.load_urls(["https://example.com", "https://example.com"], None)
+    async def test_deduplication(self):
+        urls = await pst.load_urls(["https://example.com", "https://example.com"], None)
         self.assertEqual(len(urls), 1)
 
-    def test_invalid_urls_skipped(self):
-        urls = pst.load_urls(["https://example.com", "not-a-url", "https://valid.org"], None)
+    async def test_invalid_urls_skipped(self):
+        urls = await pst.load_urls(["https://example.com", "not-a-url", "https://valid.org"], None)
         self.assertEqual(urls, ["https://example.com", "https://valid.org"])
 
-    def test_no_valid_urls_exits(self):
+    async def test_no_valid_urls_exits(self):
         with self.assertRaises(SystemExit):
-            pst.load_urls(["not-a-url"], None)
+            await pst.load_urls(["not-a-url"], None)
 
-    def test_file_not_found_exits(self):
+    async def test_file_not_found_exits(self):
         with self.assertRaises(SystemExit):
-            pst.load_urls([], "/tmp/nonexistent_urls_xyzzy_42.txt")
+            await pst.load_urls([], "/tmp/nonexistent_urls_xyzzy_42.txt")
 
-    def test_args_takes_priority_over_file(self):
+    async def test_args_takes_priority_over_file(self):
         """When url_args are provided, file_path is not read."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as fh:
             fh.write("https://from-file.com\n")
             fh.flush()
-            urls = pst.load_urls(["https://from-args.com"], fh.name)
+            urls = await pst.load_urls(["https://from-args.com"], fh.name)
         os.unlink(fh.name)
         self.assertEqual(urls, ["https://from-args.com"])
         self.assertNotIn("https://from-file.com", urls)
@@ -822,79 +821,106 @@ class TestLoadUrls(unittest.TestCase):
 # ===================================================================
 
 
-class TestFetchPagespeedResult(unittest.TestCase):
-    """Tests for fetch_pagespeed_result() — mocks requests.get and time.sleep."""
+class TestFetchPagespeedResult(unittest.IsolatedAsyncioTestCase):
+    """Tests for fetch_pagespeed_result() — mocks httpx.AsyncClient.get and asyncio.sleep."""
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_success_first_attempt(self, mock_get, mock_sleep):
-        mock_get.return_value = _make_mock_response(200, json_data=FULL_API_RESPONSE)
-        result = pst.fetch_pagespeed_result("https://example.com", "mobile")
+    async def test_success_first_attempt(self):
+        mock_client = AsyncMock()
+        mock_client.get.return_value = _make_mock_response(200, json_data=FULL_API_RESPONSE)
+        sleep_calls = []
+
+        async def fake_sleep(n):
+            sleep_calls.append(n)
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            result = await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         self.assertEqual(result, FULL_API_RESPONSE)
-        mock_sleep.assert_not_called()
+        self.assertEqual(sleep_calls, [])
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_429_with_retry_after(self, mock_get, mock_sleep):
+    async def test_429_with_retry_after(self):
+        mock_client = AsyncMock()
         rate_limited = _make_mock_response(429, headers={"Retry-After": "5"})
         success = _make_mock_response(200, json_data=FULL_API_RESPONSE)
-        mock_get.side_effect = [rate_limited, success]
-        result = pst.fetch_pagespeed_result("https://example.com", "mobile")
-        self.assertEqual(result, FULL_API_RESPONSE)
-        mock_sleep.assert_called_once_with(5.0)
+        mock_client.get.side_effect = [rate_limited, success]
+        sleep_calls = []
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_500_exponential_backoff(self, mock_get, mock_sleep):
+        async def fake_sleep(n):
+            sleep_calls.append(n)
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            result = await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
+        self.assertEqual(result, FULL_API_RESPONSE)
+        self.assertEqual(sleep_calls, [5.0])
+
+    async def test_500_exponential_backoff(self):
+        mock_client = AsyncMock()
         error_500 = _make_mock_response(500)
         success = _make_mock_response(200, json_data=FULL_API_RESPONSE)
-        mock_get.side_effect = [error_500, success]
-        result = pst.fetch_pagespeed_result("https://example.com", "mobile")
+        mock_client.get.side_effect = [error_500, success]
+        sleep_calls = []
+
+        async def fake_sleep(n):
+            sleep_calls.append(n)
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            result = await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         self.assertEqual(result, FULL_API_RESPONSE)
         # First attempt: wait_time = 2.0 * (2**0) = 2.0
-        mock_sleep.assert_called_once_with(2.0)
+        self.assertEqual(sleep_calls, [2.0])
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_503_retry(self, mock_get, mock_sleep):
+    async def test_503_retry(self):
+        mock_client = AsyncMock()
         error_503 = _make_mock_response(503)
         success = _make_mock_response(200, json_data=FULL_API_RESPONSE)
-        mock_get.side_effect = [error_503, success]
-        result = pst.fetch_pagespeed_result("https://example.com", "mobile")
+        mock_client.get.side_effect = [error_503, success]
+
+        async def fake_sleep(n):
+            pass
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            result = await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         self.assertEqual(result, FULL_API_RESPONSE)
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_non_retryable_error_403(self, mock_get, mock_sleep):
+    async def test_non_retryable_error_403(self):
+        mock_client = AsyncMock()
         forbidden = _make_mock_response(403, json_data={"error": {"message": "Forbidden"}})
-        mock_get.return_value = forbidden
+        mock_client.get.return_value = forbidden
         with self.assertRaises(pst.PageSpeedError) as ctx:
-            pst.fetch_pagespeed_result("https://example.com", "mobile")
+            await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         self.assertIn("403", str(ctx.exception))
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_max_retries_exhausted(self, mock_get, mock_sleep):
+    async def test_max_retries_exhausted(self):
+        mock_client = AsyncMock()
         error_500 = _make_mock_response(500)
-        mock_get.return_value = error_500
-        with self.assertRaises(pst.PageSpeedError) as ctx:
-            pst.fetch_pagespeed_result("https://example.com", "mobile")
+        mock_client.get.return_value = error_500
+        sleep_calls = []
+
+        async def fake_sleep(n):
+            sleep_calls.append(n)
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            with self.assertRaises(pst.PageSpeedError) as ctx:
+                await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         # On the last attempt, falls through to non-retryable raise
         self.assertIn("HTTP 500", str(ctx.exception))
         # Sleep is called between retries (MAX_RETRIES times)
-        self.assertEqual(mock_sleep.call_count, pst.MAX_RETRIES)
+        self.assertEqual(len(sleep_calls), pst.MAX_RETRIES)
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.requests.get")
-    def test_request_exception_retried(self, mock_get, mock_sleep):
-        import requests as real_requests
-        mock_get.side_effect = [
-            real_requests.ConnectionError("DNS failure"),
+    async def test_request_exception_retried(self):
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            OSError("DNS failure"),
             _make_mock_response(200, json_data=FULL_API_RESPONSE),
         ]
-        result = pst.fetch_pagespeed_result("https://example.com", "mobile")
+        sleep_calls = []
+
+        async def fake_sleep(n):
+            sleep_calls.append(n)
+
+        with patch("pagespeed_insights_tool.asyncio.sleep", fake_sleep):
+            result = await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
         self.assertEqual(result, FULL_API_RESPONSE)
-        mock_sleep.assert_called_once()
+        self.assertEqual(len(sleep_calls), 1)
 
 
 # ===================================================================
@@ -902,93 +928,80 @@ class TestFetchPagespeedResult(unittest.TestCase):
 # ===================================================================
 
 
-class TestProcessUrls(unittest.TestCase):
+class TestProcessUrls(unittest.IsolatedAsyncioTestCase):
     """Tests for process_urls() — mocks fetch_pagespeed_result."""
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.time.monotonic")
-    @patch("pagespeed_insights_tool.fetch_pagespeed_result")
-    def test_single_url(self, mock_fetch, mock_monotonic, mock_sleep):
-        mock_monotonic.side_effect = [0.0, 0.0, 2.0, 2.0]
-        mock_fetch.return_value = FULL_API_RESPONSE
-        df = pst.process_urls(
-            urls=["https://example.com"],
-            api_key=None,
-            strategies=["mobile"],
-            categories=["performance"],
-            delay=1.5,
-            workers=1,
-        )
+    async def test_single_url(self):
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            df = await pst.process_urls(
+                urls=["https://example.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0.0,
+                workers=1,
+            )
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["url"], "https://example.com")
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.time.monotonic")
-    @patch("pagespeed_insights_tool.fetch_pagespeed_result")
-    def test_multiple_urls_and_strategies(self, mock_fetch, mock_monotonic, mock_sleep):
-        mock_monotonic.return_value = 0.0
-        mock_fetch.return_value = FULL_API_RESPONSE
-        df = pst.process_urls(
-            urls=["https://a.com", "https://b.com"],
-            api_key=None,
-            strategies=["mobile", "desktop"],
-            categories=["performance"],
-            delay=0.0,
-            workers=1,
-        )
+    async def test_multiple_urls_and_strategies(self):
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            df = await pst.process_urls(
+                urls=["https://a.com", "https://b.com"],
+                api_key=None,
+                strategies=["mobile", "desktop"],
+                categories=["performance"],
+                delay=0.0,
+                workers=1,
+            )
         self.assertEqual(len(df), 4)  # 2 URLs * 2 strategies
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.time.monotonic")
-    @patch("pagespeed_insights_tool.fetch_pagespeed_result")
-    def test_error_handling_per_url(self, mock_fetch, mock_monotonic, mock_sleep):
-        mock_monotonic.return_value = 0.0
-        mock_fetch.side_effect = [
-            FULL_API_RESPONSE,
-            pst.PageSpeedError("API error"),
-        ]
-        df = pst.process_urls(
-            urls=["https://good.com", "https://bad.com"],
-            api_key=None,
-            strategies=["mobile"],
-            categories=["performance"],
-            delay=0.0,
-            workers=1,
-        )
+    async def test_error_handling_per_url(self):
+        mock_fetch = AsyncMock(side_effect=[FULL_API_RESPONSE, pst.PageSpeedError("API error")])
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            df = await pst.process_urls(
+                urls=["https://good.com", "https://bad.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0.0,
+                workers=1,
+            )
         self.assertEqual(len(df), 2)
         self.assertTrue(pd.isna(df.iloc[0].get("error")) or df.iloc[0].get("error") is None)
         self.assertIn("API error", df.iloc[1]["error"])
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.time.monotonic")
-    @patch("pagespeed_insights_tool.fetch_pagespeed_result")
-    def test_sequential_workers_1(self, mock_fetch, mock_monotonic, mock_sleep):
-        mock_monotonic.return_value = 0.0
-        mock_fetch.return_value = FULL_API_RESPONSE
-        df = pst.process_urls(
-            urls=["https://example.com"],
-            api_key=None,
-            strategies=["mobile"],
-            categories=["performance"],
-            delay=0.0,
-            workers=1,
-        )
+    async def test_sequential_workers_1(self):
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            df = await pst.process_urls(
+                urls=["https://example.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0.0,
+                workers=1,
+            )
         self.assertEqual(len(df), 1)
 
-    @patch("pagespeed_insights_tool.time.sleep")
-    @patch("pagespeed_insights_tool.time.monotonic")
-    @patch("pagespeed_insights_tool.fetch_pagespeed_result")
-    def test_concurrent_workers_4(self, mock_fetch, mock_monotonic, mock_sleep):
-        mock_monotonic.return_value = 0.0
-        mock_fetch.return_value = FULL_API_RESPONSE
-        df = pst.process_urls(
-            urls=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
-            api_key=None,
-            strategies=["mobile"],
-            categories=["performance"],
-            delay=0.0,
-            workers=4,
-        )
+    async def test_concurrent_workers_4(self):
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            df = await pst.process_urls(
+                urls=["https://a.com", "https://b.com", "https://c.com", "https://d.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0.0,
+                workers=4,
+            )
         self.assertEqual(len(df), 4)
 
 
@@ -1324,7 +1337,7 @@ class TestPrintAuditSummary(unittest.TestCase):
 # ===================================================================
 
 
-class TestCmdPipeline(unittest.TestCase):
+class TestCmdPipeline(unittest.IsolatedAsyncioTestCase):
     """Integration-level tests for cmd_pipeline()."""
 
     def _make_pipeline_args(self, **kwargs):
@@ -1351,93 +1364,99 @@ class TestCmdPipeline(unittest.TestCase):
         args._explicit_args = []
         return args
 
-    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
-    @patch("pagespeed_insights_tool._print_audit_summary")
-    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
-    @patch("pagespeed_insights_tool.process_urls")
-    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
-    def test_sitemap_auto_detection(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
-        mock_process.return_value = _sample_dataframe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = self._make_pipeline_args(
-                source=["https://example.com/sitemap.xml"],
-                output_dir=tmpdir,
-            )
-            pst.cmd_pipeline(args)
+    async def test_sitemap_auto_detection(self):
+        mock_load = AsyncMock(return_value=["https://example.com"])
+        mock_process = AsyncMock(return_value=_sample_dataframe())
+        with patch("pagespeed_insights_tool.load_urls", mock_load), \
+             patch("pagespeed_insights_tool.process_urls", mock_process), \
+             patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"]), \
+             patch("pagespeed_insights_tool._print_audit_summary"), \
+             patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = self._make_pipeline_args(
+                    source=["https://example.com/sitemap.xml"],
+                    output_dir=tmpdir,
+                )
+                await pst.cmd_pipeline(args)
         # Single .xml arg should route to sitemap param, not url_args
         mock_load.assert_called_once()
         call_kwargs = mock_load.call_args
         self.assertEqual(call_kwargs[0][0], [])  # url_args empty
         self.assertEqual(call_kwargs[1]["sitemap"], "https://example.com/sitemap.xml")
 
-    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
-    @patch("pagespeed_insights_tool._print_audit_summary")
-    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
-    @patch("pagespeed_insights_tool.process_urls")
-    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
-    def test_plain_url_fallback(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
-        mock_process.return_value = _sample_dataframe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = self._make_pipeline_args(
-                source=["https://example.com"],
-                output_dir=tmpdir,
-            )
-            pst.cmd_pipeline(args)
+    async def test_plain_url_fallback(self):
+        mock_load = AsyncMock(return_value=["https://example.com"])
+        mock_process = AsyncMock(return_value=_sample_dataframe())
+        with patch("pagespeed_insights_tool.load_urls", mock_load), \
+             patch("pagespeed_insights_tool.process_urls", mock_process), \
+             patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"]), \
+             patch("pagespeed_insights_tool._print_audit_summary"), \
+             patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = self._make_pipeline_args(
+                    source=["https://example.com"],
+                    output_dir=tmpdir,
+                )
+                await pst.cmd_pipeline(args)
         mock_load.assert_called_once()
         call_kwargs = mock_load.call_args
         self.assertEqual(call_kwargs[0][0], ["https://example.com"])  # url_args populated
         self.assertIsNone(call_kwargs[1]["sitemap"])
 
-    @patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>")
-    @patch("pagespeed_insights_tool._print_audit_summary")
-    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
-    @patch("pagespeed_insights_tool.process_urls")
-    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
-    def test_explicit_sitemap_flag_overrides(self, mock_load, mock_process, mock_write, mock_summary, mock_html):
-        mock_process.return_value = _sample_dataframe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = self._make_pipeline_args(
-                source=["https://example.com"],
-                sitemap="https://example.com/sitemap.xml",
-                output_dir=tmpdir,
-            )
-            pst.cmd_pipeline(args)
+    async def test_explicit_sitemap_flag_overrides(self):
+        mock_load = AsyncMock(return_value=["https://example.com"])
+        mock_process = AsyncMock(return_value=_sample_dataframe())
+        with patch("pagespeed_insights_tool.load_urls", mock_load), \
+             patch("pagespeed_insights_tool.process_urls", mock_process), \
+             patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"]), \
+             patch("pagespeed_insights_tool._print_audit_summary"), \
+             patch("pagespeed_insights_tool.generate_html_report", return_value="<html></html>"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = self._make_pipeline_args(
+                    source=["https://example.com"],
+                    sitemap="https://example.com/sitemap.xml",
+                    output_dir=tmpdir,
+                )
+                await pst.cmd_pipeline(args)
         mock_load.assert_called_once()
         call_kwargs = mock_load.call_args
         self.assertEqual(call_kwargs[1]["sitemap"], "https://example.com/sitemap.xml")
 
-    @patch("pagespeed_insights_tool._print_audit_summary")
-    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
-    @patch("pagespeed_insights_tool.process_urls")
-    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
-    def test_no_report_skips_html(self, mock_load, mock_process, mock_write, mock_summary):
-        mock_process.return_value = _sample_dataframe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = self._make_pipeline_args(
-                source=["https://example.com"],
-                output_dir=tmpdir,
-                no_report=True,
-            )
-            with patch("pagespeed_insights_tool.generate_html_report") as mock_html:
-                pst.cmd_pipeline(args)
-                mock_html.assert_not_called()
+    async def test_no_report_skips_html(self):
+        mock_load = AsyncMock(return_value=["https://example.com"])
+        mock_process = AsyncMock(return_value=_sample_dataframe())
+        mock_html = MagicMock()
+        with patch("pagespeed_insights_tool.load_urls", mock_load), \
+             patch("pagespeed_insights_tool.process_urls", mock_process), \
+             patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"]), \
+             patch("pagespeed_insights_tool._print_audit_summary"), \
+             patch("pagespeed_insights_tool.generate_html_report", mock_html):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = self._make_pipeline_args(
+                    source=["https://example.com"],
+                    output_dir=tmpdir,
+                    no_report=True,
+                )
+                await pst.cmd_pipeline(args)
+        mock_html.assert_not_called()
 
-    @patch("pagespeed_insights_tool._print_audit_summary")
-    @patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"])
-    @patch("pagespeed_insights_tool.process_urls")
-    @patch("pagespeed_insights_tool.load_urls", return_value=["https://example.com"])
-    def test_full_pipeline_writes_html(self, mock_load, mock_process, mock_write, mock_summary):
-        mock_process.return_value = _sample_dataframe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = self._make_pipeline_args(
-                source=["https://example.com"],
-                output_dir=tmpdir,
-            )
-            pst.cmd_pipeline(args)
-            # HTML report file should exist in the output dir
-            html_files = list(Path(tmpdir).glob("*.html"))
-            self.assertEqual(len(html_files), 1)
-            self.assertIn("-report.html", html_files[0].name)
+    async def test_full_pipeline_writes_html(self):
+        mock_load = AsyncMock(return_value=["https://example.com"])
+        mock_process = AsyncMock(return_value=_sample_dataframe())
+        with patch("pagespeed_insights_tool.load_urls", mock_load), \
+             patch("pagespeed_insights_tool.process_urls", mock_process), \
+             patch("pagespeed_insights_tool._write_data_files", return_value=["/tmp/data.csv"]), \
+             patch("pagespeed_insights_tool._print_audit_summary"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                args = self._make_pipeline_args(
+                    source=["https://example.com"],
+                    output_dir=tmpdir,
+                )
+                await pst.cmd_pipeline(args)
+                # HTML report file should exist in the output dir
+                html_files = list(Path(tmpdir).glob("*.html"))
+                self.assertEqual(len(html_files), 1)
+                self.assertIn("-report.html", html_files[0].name)
 
 
 # ===================================================================
@@ -1623,25 +1642,30 @@ class TestFormatBudget(unittest.TestCase):
 # ===================================================================
 
 
-class TestSendBudgetWebhook(unittest.TestCase):
+class TestSendBudgetWebhook(unittest.IsolatedAsyncioTestCase):
     """Tests for send_budget_webhook()."""
 
-    @patch("pagespeed_insights_tool.requests.post")
-    def test_success(self, mock_post):
+    async def test_success(self):
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
-        verdict = {"verdict": "pass"}
-        pst.send_budget_webhook("https://hooks.example.com/test", verdict)
-        mock_post.assert_called_once_with("https://hooks.example.com/test", json=verdict, timeout=30)
 
-    @patch("pagespeed_insights_tool.requests.post")
-    def test_failure_warning(self, mock_post):
-        import requests as real_requests
-        mock_post.side_effect = real_requests.RequestException("Connection refused")
-        with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
-            pst.send_budget_webhook("https://hooks.example.com/test", {"verdict": "fail"})
-        self.assertIn("Warning: webhook delivery failed", mock_stderr.getvalue())
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.post.return_value = mock_response
+
+        verdict = {"verdict": "pass"}
+        with patch("pagespeed_insights_tool.httpx.AsyncClient", return_value=mock_client):
+            await pst.send_budget_webhook("https://hooks.example.com/test", verdict)
+        mock_client.post.assert_called_once_with("https://hooks.example.com/test", json=verdict, timeout=30)
+
+    async def test_failure_warning(self):
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.post.side_effect = OSError("Connection refused")
+
+        # Should not raise — failures are warnings only
+        with patch("pagespeed_insights_tool.httpx.AsyncClient", return_value=mock_client):
+            await pst.send_budget_webhook("https://hooks.example.com/test", {"verdict": "fail"})
 
 
 # ===================================================================
@@ -1649,7 +1673,7 @@ class TestSendBudgetWebhook(unittest.TestCase):
 # ===================================================================
 
 
-class TestApplyBudget(unittest.TestCase):
+class TestApplyBudget(unittest.IsolatedAsyncioTestCase):
     """Tests for _apply_budget()."""
 
     def _make_args(self, budget=None, budget_format="text", webhook=None, webhook_on="always"):
@@ -1662,34 +1686,34 @@ class TestApplyBudget(unittest.TestCase):
         )
         return args
 
-    def test_pass_returns_zero(self):
+    async def test_pass_returns_zero(self):
         df = _sample_dataframe()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
             fh.write('[thresholds]\nmin_performance_score = 90\n')
             fh.flush()
             args = self._make_args(budget=fh.name)
-            exit_code = pst._apply_budget(df, args)
+            exit_code = await pst._apply_budget(df, args)
         os.unlink(fh.name)
         self.assertEqual(exit_code, 0)
 
-    def test_fail_returns_budget_exit_code(self):
+    async def test_fail_returns_budget_exit_code(self):
         df = _sample_dataframe()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
             fh.write('[thresholds]\nmin_performance_score = 99\n')
             fh.flush()
             args = self._make_args(budget=fh.name)
-            exit_code = pst._apply_budget(df, args)
+            exit_code = await pst._apply_budget(df, args)
         os.unlink(fh.name)
         self.assertEqual(exit_code, pst.BUDGET_EXIT_CODE)
 
-    def test_all_errors_returns_one(self):
+    async def test_all_errors_returns_one(self):
         rows = [{"url": "https://fail.com", "strategy": "mobile", "error": "HTTP 500"}]
         df = pd.DataFrame(rows)
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as fh:
             fh.write('[thresholds]\nmin_performance_score = 90\n')
             fh.flush()
             args = self._make_args(budget=fh.name)
-            exit_code = pst._apply_budget(df, args)
+            exit_code = await pst._apply_budget(df, args)
         os.unlink(fh.name)
         self.assertEqual(exit_code, 1)
 

@@ -16,7 +16,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
-dependencies = ["requests", "pandas", "rich"]
+dependencies = [
+    "httpx",
+    "pandas",
+    "rich",
+]
 
 [project.scripts]
 pagespeed = "pagespeed_insights_tool:main"
@@ -31,3 +35,8 @@ path = "pagespeed_insights_tool.py"
 
 [tool.hatch.build]
 include = ["pagespeed_insights_tool.py"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

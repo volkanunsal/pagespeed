@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
-#   "requests",
+#   "httpx",
 #   "pandas",
 #   "rich",
 # ]
@@ -16,24 +16,23 @@ CSV/JSON/HTML reports.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 import os
 import re
 import sys
 import textwrap
-import threading
 import time
 import tomllib
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
+import httpx
 import pandas as pd
-import requests
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.progress import (
@@ -473,17 +472,22 @@ def validate_url(url: str) -> str | None:
     return url
 
 
-def _fetch_sitemap_content(source: str) -> str:
+async def _fetch_sitemap_content(source: str, client: httpx.AsyncClient) -> str:
     """Fetch sitemap XML from a URL or read from a local file path."""
     if source.startswith(("http://", "https://")):
-        response = requests.get(source, timeout=SITEMAP_FETCH_TIMEOUT)
+        response = await client.get(source, timeout=SITEMAP_FETCH_TIMEOUT)
         response.raise_for_status()
         return response.text
     path = Path(source)
     return path.read_text()
 
 
-def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) -> list[str]:
+async def parse_sitemap_xml(
+    xml_content: str,
+    verbose: bool = False,
+    _depth: int = 0,
+    client: httpx.AsyncClient | None = None,
+) -> list[str]:
     """Parse sitemap XML and return extracted URLs.
 
     Handles both <urlset> and <sitemapindex> root elements.
@@ -516,10 +520,10 @@ def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) 
             if verbose:
                 err_console.print(f"  Following child sitemap: {child_url}")
             try:
-                child_content = _fetch_sitemap_content(child_url)
-                child_urls = parse_sitemap_xml(child_content, verbose, _depth + 1)
+                child_content = await _fetch_sitemap_content(child_url, client)
+                child_urls = await parse_sitemap_xml(child_content, verbose, _depth + 1, client)
                 urls.extend(child_urls)
-            except (requests.RequestException, OSError) as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 err_console.print(f"[yellow]Warning:[/yellow] failed to fetch child sitemap {child_url}: {exc}")
     else:
         # Assume <urlset>
@@ -534,7 +538,7 @@ def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) 
     return urls
 
 
-def fetch_sitemap_urls(
+async def fetch_sitemap_urls(
     source: str,
     limit: int | None = None,
     filter_pattern: str | None = None,
@@ -548,14 +552,15 @@ def fetch_sitemap_urls(
         filter_pattern: Regex pattern to filter URLs (keeps matches).
         verbose: Print progress to stderr.
     """
-    try:
-        if verbose:
-            err_console.print(f"  Fetching sitemap: {source}")
-        xml_content = _fetch_sitemap_content(source)
-        urls = parse_sitemap_xml(xml_content, verbose)
-    except (requests.RequestException, OSError) as exc:
-        err_console.print(f"[yellow]Warning:[/yellow] failed to fetch sitemap {source}: {exc}")
-        return []
+    async with httpx.AsyncClient() as client:
+        try:
+            if verbose:
+                err_console.print(f"  Fetching sitemap: {source}")
+            xml_content = await _fetch_sitemap_content(source, client)
+            urls = await parse_sitemap_xml(xml_content, verbose, client=client)
+        except (httpx.HTTPError, OSError) as exc:
+            err_console.print(f"[yellow]Warning:[/yellow] failed to fetch sitemap {source}: {exc}")
+            return []
 
     if verbose:
         err_console.print(f"  Found {len(urls)} URL(s) in sitemap")
@@ -578,7 +583,7 @@ def fetch_sitemap_urls(
     return urls
 
 
-def load_urls(
+async def load_urls(
     url_args: list[str],
     file_path: str | None,
     allow_stdin: bool = True,
@@ -602,7 +607,7 @@ def load_urls(
         raw_urls.extend(sys.stdin.read().splitlines())
 
     if sitemap:
-        sitemap_urls = fetch_sitemap_urls(
+        sitemap_urls = await fetch_sitemap_urls(
             source=sitemap,
             limit=sitemap_limit,
             filter_pattern=sitemap_filter,
@@ -658,17 +663,19 @@ def _looks_like_sitemap(source: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def fetch_pagespeed_result(
+async def fetch_pagespeed_result(
     url: str,
     strategy: str,
     api_key: str | None = None,
     categories: list[str] | None = None,
+    *,
+    client: httpx.AsyncClient,
 ) -> dict:
     """Fetch PageSpeed Insights results for a single URL + strategy.
 
     Retries on 429/500/503 with exponential backoff.
     """
-    # requests supports list values for repeated query params
+    # httpx supports list values for repeated query params
     category_list = categories or DEFAULT_CATEGORIES
     params: dict[str, str | list[str]] = {
         "url": url,
@@ -681,7 +688,7 @@ def fetch_pagespeed_result(
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = requests.get(
+            response = await client.get(
                 PAGESPEED_API_URL,
                 params=params,
                 timeout=120,
@@ -704,7 +711,7 @@ def fetch_pagespeed_result(
                         f"  [yellow]⚠[/yellow] HTTP {response.status_code} — retrying in {wait_time:.1f}s "
                         f"(attempt {attempt + 1}/{MAX_RETRIES})..."
                     )
-                    time.sleep(wait_time)
+                    await asyncio.sleep(wait_time)
                     continue
 
             # Non-retryable error
@@ -718,7 +725,7 @@ def fetch_pagespeed_result(
                 f"HTTP {response.status_code} for {url} ({strategy}): {error_detail}"
             )
 
-        except requests.RequestException as exc:
+        except (httpx.RequestError, OSError) as exc:
             last_error = exc
             if attempt < MAX_RETRIES:
                 wait_time = RETRY_BASE_DELAY * (2**attempt)
@@ -726,7 +733,7 @@ def fetch_pagespeed_result(
                     f"  [yellow]⚠[/yellow] Request error: {exc} — retrying in {wait_time:.1f}s "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})..."
                 )
-                time.sleep(wait_time)
+                await asyncio.sleep(wait_time)
                 continue
 
     raise PageSpeedError(f"Failed after {MAX_RETRIES + 1} attempts for {url} ({strategy}): {last_error}")
@@ -796,7 +803,7 @@ def extract_metrics(api_response: dict, url: str, strategy: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def process_urls(
+async def process_urls(
     urls: list[str],
     api_key: str | None,
     strategies: list[str],
@@ -813,9 +820,8 @@ def process_urls(
     task_list = base_tasks * runs
     total_tasks = len(task_list)
     base_count = len(base_tasks)
-    semaphore = threading.Semaphore(1)  # rate limiter
+    semaphore = asyncio.Semaphore(1)  # rate limiter
     last_request_time = [0.0]  # mutable for closure
-    results_lock = threading.Lock()  # protects results list append only
 
     progress = Progress(
         SpinnerColumn(),
@@ -829,13 +835,13 @@ def process_urls(
     )
     prog_task = progress.add_task("Fetching...", total=total_tasks)
 
-    def process_single(url: str, strategy: str, task_index: int) -> dict:
+    async def process_single(url: str, strategy: str, task_index: int) -> dict:
         # Rate limiting
-        with semaphore:
+        async with semaphore:
             now = time.monotonic()
             elapsed = now - last_request_time[0]
             if elapsed < delay:
-                time.sleep(delay - elapsed)
+                await asyncio.sleep(delay - elapsed)
             last_request_time[0] = time.monotonic()
 
         short_url = url if len(url) <= 50 else url[:47] + "..."
@@ -847,7 +853,7 @@ def process_urls(
             err_console.print(f"  [dim]Fetching[/dim] [cyan]{url}[/cyan] ({strategy}){v_run_label}...")
 
         try:
-            response = fetch_pagespeed_result(url, strategy, api_key, categories)
+            response = await fetch_pagespeed_result(url, strategy, api_key, categories, client=client)
             metrics = extract_metrics(response, url, strategy)
         except PageSpeedError as exc:
             metrics = {
@@ -860,20 +866,17 @@ def process_urls(
         progress.advance(prog_task)
         return metrics
 
-    with progress:
-        effective_workers = min(workers, total_tasks)
-        if effective_workers <= 1:
-            for task_index, (url, strategy) in enumerate(task_list):
-                results.append(process_single(url, strategy, task_index))
-        else:
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                futures = {
-                    executor.submit(process_single, url, strategy, task_index): (url, strategy)
-                    for task_index, (url, strategy) in enumerate(task_list)
-                }
-                for future in as_completed(futures):
-                    with results_lock:
-                        results.append(future.result())
+    async with httpx.AsyncClient() as client:
+        with progress:
+            effective_workers = min(workers, total_tasks)
+            if effective_workers <= 1:
+                for task_index, (url, strategy) in enumerate(task_list):
+                    results.append(await process_single(url, strategy, task_index))
+            else:
+                results = list(await asyncio.gather(*[
+                    process_single(url, strategy, i)
+                    for i, (url, strategy) in enumerate(task_list)
+                ]))
 
     raw_dataframe = pd.DataFrame(results)
     return aggregate_multi_run(raw_dataframe, runs)
@@ -1175,16 +1178,17 @@ def format_budget_github(verdict: dict) -> str:
     return "\n".join(lines)
 
 
-def send_budget_webhook(webhook_url: str, verdict: dict) -> None:
+async def send_budget_webhook(webhook_url: str, verdict: dict) -> None:
     """POST budget verdict to a webhook URL. Failures are warnings only."""
     try:
-        response = requests.post(webhook_url, json=verdict, timeout=30)
-        response.raise_for_status()
-    except (requests.RequestException, OSError) as exc:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(webhook_url, json=verdict, timeout=30)
+            response.raise_for_status()
+    except (httpx.HTTPError, OSError) as exc:
         err_console.print(f"[yellow]Warning:[/yellow] webhook delivery failed: {exc}")
 
 
-def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
+async def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
     """Orchestrate budget evaluation when --budget is set. Returns exit code."""
     budget = load_budget(args.budget)
     verdict = evaluate_budget(dataframe, budget)
@@ -1212,7 +1216,7 @@ def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
     if webhook_url:
         webhook_on = getattr(args, "webhook_on", "always")
         if webhook_on == "always" or (webhook_on == "fail" and verdict["verdict"] == "fail"):
-            send_budget_webhook(webhook_url, verdict)
+            await send_budget_webhook(webhook_url, verdict)
 
     if verdict["verdict"] == "fail":
         return BUDGET_EXIT_CODE
@@ -1441,7 +1445,7 @@ def load_report(file_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def cmd_quick_check(args: argparse.Namespace) -> None:
+async def cmd_quick_check(args: argparse.Namespace) -> None:
     """Run a quick single-URL spot check and print results to stdout."""
     url = validate_url(args.url)
     if not url:
@@ -1456,26 +1460,27 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     results = []
-    for strategy in strategies:
-        run_metrics = []
-        for run_number in range(1, runs + 1):
-            run_label = f" [run {run_number}/{runs}]" if runs > 1 else ""
-            with err_console.status(
-                f"Fetching [cyan]{url}[/cyan] ({strategy}){run_label}...",
-                spinner="dots",
-            ):
-                try:
-                    response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
-                    metrics = extract_metrics(response, url, strategy)
-                    run_metrics.append(metrics)
-                except PageSpeedError as exc:
-                    run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
-        if runs > 1:
-            run_df = pd.DataFrame(run_metrics)
-            aggregated_df = aggregate_multi_run(run_df, runs)
-            results.append(aggregated_df.iloc[0].to_dict())
-        else:
-            results.append(run_metrics[0])
+    async with httpx.AsyncClient() as client:
+        for strategy in strategies:
+            run_metrics = []
+            for run_number in range(1, runs + 1):
+                run_label = f" [run {run_number}/{runs}]" if runs > 1 else ""
+                with err_console.status(
+                    f"Fetching [cyan]{url}[/cyan] ({strategy}){run_label}...",
+                    spinner="dots",
+                ):
+                    try:
+                        response = await fetch_pagespeed_result(url, strategy, args.api_key, categories, client=client)
+                        metrics = extract_metrics(response, url, strategy)
+                        run_metrics.append(metrics)
+                    except PageSpeedError as exc:
+                        run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
+            if runs > 1:
+                run_df = pd.DataFrame(run_metrics)
+                aggregated_df = aggregate_multi_run(run_df, runs)
+                results.append(aggregated_df.iloc[0].to_dict())
+            else:
+                results.append(run_metrics[0])
 
     out_console.print(format_terminal_table(results, show_run_metadata=(runs > 1)))
 
@@ -1485,9 +1490,9 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_audit(args: argparse.Namespace) -> None:
+async def cmd_audit(args: argparse.Namespace) -> None:
     """Run a full batch analysis and write report files."""
-    urls = load_urls(
+    urls = await load_urls(
         getattr(args, "urls", []),
         getattr(args, "file", None),
         sitemap=getattr(args, "sitemap", None),
@@ -1506,7 +1511,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     err_console.print(
         f"Auditing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
     )
-    dataframe = process_urls(
+    dataframe = await process_urls(
         urls=urls,
         api_key=args.api_key,
         strategies=strategies,
@@ -1526,7 +1531,7 @@ def cmd_audit(args: argparse.Namespace) -> None:
     _print_audit_summary(dataframe)
 
     if getattr(args, "budget", None):
-        exit_code = _apply_budget(dataframe, args)
+        exit_code = await _apply_budget(dataframe, args)
         sys.exit(exit_code)
 
 
@@ -1966,9 +1971,9 @@ def cmd_report(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+async def cmd_run(args: argparse.Namespace) -> None:
     """Low-level direct access — same internals as audit."""
-    cmd_audit(args)
+    await cmd_audit(args)
 
 
 # ---------------------------------------------------------------------------
@@ -1976,7 +1981,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_pipeline(args: argparse.Namespace) -> None:
+async def cmd_pipeline(args: argparse.Namespace) -> None:
     """End-to-end pipeline: resolve URLs, analyze, write data, generate HTML report."""
 
     # --- Phase 1: Resolve sources ---
@@ -1992,7 +1997,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         plain_urls = source_args
 
     # --- Phase 2: Load URLs ---
-    urls = load_urls(
+    urls = await load_urls(
         plain_urls,
         getattr(args, "file", None),
         sitemap=sitemap_target,
@@ -2013,7 +2018,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     err_console.print(
         f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
     )
-    dataframe = process_urls(
+    dataframe = await process_urls(
         urls=urls,
         api_key=args.api_key,
         strategies=strategies,
@@ -2048,7 +2053,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 
     # --- Phase 6: Budget evaluation ---
     if getattr(args, "budget", None):
-        exit_code = _apply_budget(dataframe, args)
+        exit_code = await _apply_budget(dataframe, args)
         sys.exit(exit_code)
 
 
@@ -2057,10 +2062,10 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_budget(args: argparse.Namespace) -> None:
+async def cmd_budget(args: argparse.Namespace) -> None:
     """Evaluate existing results against a performance budget (no API calls)."""
     dataframe = load_report(args.input_file)
-    exit_code = _apply_budget(dataframe, args)
+    exit_code = await _apply_budget(dataframe, args)
     sys.exit(exit_code)
 
 
@@ -2098,7 +2103,10 @@ def main() -> None:
 
     handler = commands.get(args.command)
     if handler:
-        handler(args)
+        if asyncio.iscoroutinefunction(handler):
+            asyncio.run(handler(args))
+        else:
+            handler(args)
     else:
         parser.print_help()
         sys.exit(1)
