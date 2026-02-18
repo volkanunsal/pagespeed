@@ -3,6 +3,7 @@
 # dependencies = [
 #   "requests",
 #   "pandas",
+#   "rich",
 # ]
 # ///
 """Unit tests for pagespeed_insights_tool.py.
