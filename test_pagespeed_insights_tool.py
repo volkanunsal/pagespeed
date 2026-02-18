@@ -27,12 +27,22 @@ import tempfile
 import textwrap
 import unittest
 from io import StringIO
+import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+from rich.console import Console
 
 import pagespeed_insights_tool as pst
+
+
+def _render_rich(renderable) -> str:
+    """Render a rich renderable to a plain string (no ANSI, no markup)."""
+    buf = io.StringIO()
+    console = Console(file=buf, highlight=False)
+    console.print(renderable)
+    return buf.getvalue()
 
 # ---------------------------------------------------------------------------
 # Shared Fixtures
@@ -285,7 +295,7 @@ class TestFormatTerminalTable(unittest.TestCase):
             "performance_score": 92,
             "lab_fcp_ms": 1200,
         }
-        output = pst.format_terminal_table(metrics)
+        output = _render_rich(pst.format_terminal_table(metrics))
         self.assertIn("https://example.com", output)
         self.assertIn("mobile", output)
         self.assertIn("92/100", output)
@@ -295,30 +305,30 @@ class TestFormatTerminalTable(unittest.TestCase):
             {"url": "https://a.com", "strategy": "mobile", "error": None, "performance_score": 90},
             {"url": "https://b.com", "strategy": "desktop", "error": None, "performance_score": 50},
         ]
-        output = pst.format_terminal_table(metrics_list)
+        output = _render_rich(pst.format_terminal_table(metrics_list))
         self.assertIn("https://a.com", output)
         self.assertIn("https://b.com", output)
 
     def test_error_row(self):
         metrics = {"url": "https://fail.com", "strategy": "mobile", "error": "HTTP 500"}
-        output = pst.format_terminal_table(metrics)
+        output = _render_rich(pst.format_terminal_table(metrics))
         self.assertIn("HTTP 500", output)
         # Error rows don't show lab data
         self.assertNotIn("Lab Data", output)
 
     def test_score_indicator_good(self):
         metrics = {"url": "https://x.com", "strategy": "mobile", "error": None, "performance_score": 95}
-        output = pst.format_terminal_table(metrics)
+        output = _render_rich(pst.format_terminal_table(metrics))
         self.assertIn("GOOD", output)
 
     def test_score_indicator_needs_work(self):
         metrics = {"url": "https://x.com", "strategy": "mobile", "error": None, "performance_score": 60}
-        output = pst.format_terminal_table(metrics)
+        output = _render_rich(pst.format_terminal_table(metrics))
         self.assertIn("NEEDS WORK", output)
 
     def test_score_indicator_poor(self):
         metrics = {"url": "https://x.com", "strategy": "mobile", "error": None, "performance_score": 30}
-        output = pst.format_terminal_table(metrics)
+        output = _render_rich(pst.format_terminal_table(metrics))
         self.assertIn("POOR", output)
 
 
@@ -1284,9 +1294,9 @@ class TestPrintAuditSummary(unittest.TestCase):
         with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
             pst._print_audit_summary(dataframe)
         output = mock_stderr.getvalue()
-        self.assertIn("Avg score:", output)
-        self.assertIn("Min score:", output)
-        self.assertIn("Max score:", output)
+        self.assertIn("Avg score", output)
+        self.assertIn("Min score", output)
+        self.assertIn("Max score", output)
 
     def test_prints_error_count(self):
         rows = [
@@ -1297,7 +1307,7 @@ class TestPrintAuditSummary(unittest.TestCase):
         with patch("sys.stderr", new_callable=StringIO) as mock_stderr:
             pst._print_audit_summary(dataframe)
         output = mock_stderr.getvalue()
-        self.assertIn("Errors:", output)
+        self.assertIn("Errors", output)
         self.assertIn("1", output)
 
     def test_no_output_without_score_column(self):
