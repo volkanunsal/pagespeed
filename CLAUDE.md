@@ -48,7 +48,7 @@ Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in orde
 
 - **Data-driven metric extraction**: `LAB_METRICS` and `FIELD_METRICS` tuples map API paths to output column names. `extract_metrics()` iterates these lists — no per-metric code.
 - **Config merging via TrackingAction**: Custom argparse actions record which flags were explicitly set on CLI, so `apply_profile()` only fills in unset values from config/profile.
-- **Rate limiting**: Even with N workers, a shared `Semaphore(1)` + delay timer serializes actual API calls. Workers prepare results in parallel but HTTP requests are sequential.
+- **Rate limiting**: A shared `Semaphore(1)` gates API calls so each worker sleeps `delay` seconds after the previous request before starting its own. HTTP requests are concurrent-but-staggered: multiple calls can be in-flight simultaneously, but they start `delay` seconds apart. Completions therefore also arrive `delay` seconds apart, which looks sequential in the progress display even though total wall time is much shorter than pure sequential processing.
 - **Auto-timestamped output**: Files named `{YYYYMMDD}T{HHMMSS}Z-{strategy}.{ext}` — safe for cron, never overwrites.
 - **Multi-run median scoring**: `--runs N` runs each URL N times with interleaved ordering (run 1 all URLs, run 2 all URLs, etc.) and computes median values. Adds `runs_completed`, `score_range`, `score_stddev` metadata columns when N > 1.
 

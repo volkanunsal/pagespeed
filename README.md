@@ -335,7 +335,7 @@ Field data comes from the Chrome User Experience Report. It may not be available
 
 Tips:
 - Use `--delay` to increase time between requests if hitting rate limits
-- Use `--workers 1` for sequential processing (safest for rate limits)
+- Use `--workers 1` to process one URL at a time (safest for rate limits); higher values allow concurrent in-flight requests staggered by `--delay` seconds
 - The tool retries on 429 (rate limit) responses with exponential backoff
 
 ## Cron usage
