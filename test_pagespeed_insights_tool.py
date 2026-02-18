@@ -1294,6 +1294,45 @@ class TestWriteDataFiles(unittest.TestCase):
             mock_gen.assert_called_once_with(tmpdir, "mobile", "csv")
             self.assertEqual(len(paths), 1)
 
+    def test_errors_csv_written_when_error_rows_present(self):
+        rows = [
+            {"url": "https://good.com", "strategy": "mobile", "error": None, "performance_score": 90},
+            {"url": "https://bad.com", "strategy": "mobile", "error": "HTTP 400: FAILED_DOCUMENT_REQUEST", "performance_score": None},
+        ]
+        dataframe = pd.DataFrame(rows)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pst._write_data_files(dataframe, "csv", tmpdir, None, "mobile")
+            error_files = list(Path(tmpdir).glob("*errors*.csv"))
+            self.assertEqual(len(error_files), 1)
+            error_df = pd.read_csv(error_files[0])
+            self.assertEqual(list(error_df.columns), ["url", "strategy", "error"])
+            self.assertEqual(len(error_df), 1)
+            self.assertEqual(error_df.iloc[0]["url"], "https://bad.com")
+
+    def test_errors_csv_not_written_when_no_errors(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pst._write_data_files(self.dataframe, "csv", tmpdir, None, "mobile")
+            error_files = list(Path(tmpdir).glob("*errors*.csv"))
+            self.assertEqual(len(error_files), 0)
+
+    def test_errors_csv_not_written_when_no_error_column(self):
+        dataframe = pd.DataFrame([{"url": "https://a.com", "strategy": "mobile", "performance_score": 80}])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pst._write_data_files(dataframe, "csv", tmpdir, None, "mobile")
+            error_files = list(Path(tmpdir).glob("*errors*.csv"))
+            self.assertEqual(len(error_files), 0)
+
+    def test_errors_csv_always_csv_regardless_of_output_format(self):
+        rows = [
+            {"url": "https://good.com", "strategy": "mobile", "error": None, "performance_score": 90},
+            {"url": "https://bad.com", "strategy": "mobile", "error": "HTTP 400", "performance_score": None},
+        ]
+        dataframe = pd.DataFrame(rows)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pst._write_data_files(dataframe, "json", tmpdir, None, "mobile")
+            error_files = list(Path(tmpdir).glob("*errors*.csv"))
+            self.assertEqual(len(error_files), 1)
+
 
 # ===================================================================
 # 21. TestPrintAuditSummary
