@@ -3,6 +3,7 @@
 # dependencies = [
 #   "requests",
 #   "pandas",
+#   "rich",
 # ]
 # ///
 """PageSpeed Insights Batch Analysis CLI Tool.
@@ -33,8 +34,22 @@ import xml.etree.ElementTree as ET
 
 import pandas as pd
 import requests
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
+from rich.text import Text
+from rich import box
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -141,6 +156,47 @@ class PageSpeedError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Rich consoles
+# ---------------------------------------------------------------------------
+
+err_console = Console(stderr=True)   # status, progress, summaries → stderr
+out_console = Console()              # quick-check results → stdout
+
+
+# ---------------------------------------------------------------------------
+# Score/category styling helpers
+# ---------------------------------------------------------------------------
+
+
+def _score_color(score: int | float | None) -> str:
+    if score is None:
+        return "dim"
+    if score >= 90:
+        return "green"
+    if score >= 50:
+        return "yellow"
+    return "red"
+
+
+def _score_text(score: int | float | None) -> Text:
+    if score is None:
+        return Text("N/A", style="dim")
+    label = "GOOD" if score >= 90 else ("NEEDS WORK" if score >= 50 else "POOR")
+    return Text(f"{score}/100 ({label})", style=f"bold {_score_color(score)}")
+
+
+def _field_cat_color(cat: str | None) -> str:
+    if cat is None:
+        return "dim"
+    c = cat.upper()
+    if c == "FAST":
+        return "green"
+    if c == "AVERAGE":
+        return "yellow"
+    return "red"
+
+
+# ---------------------------------------------------------------------------
 # Config & Profile
 # ---------------------------------------------------------------------------
 
@@ -163,10 +219,10 @@ def load_config(config_path: Path | None) -> dict:
         with open(config_path, "rb") as fh:
             return tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
-        print(f"Error: malformed config file {config_path}: {exc}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] malformed config file {config_path}: {exc}")
         sys.exit(1)
     except OSError as exc:
-        print(f"Error: cannot read config file {config_path}: {exc}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] cannot read config file {config_path}: {exc}")
         sys.exit(1)
 
 
@@ -181,13 +237,13 @@ def load_budget(budget_source: str) -> dict:
 
     budget_path = Path(budget_source)
     if not budget_path.is_file():
-        print(f"Error: budget file not found: {budget_source}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] budget file not found: {budget_source}")
         sys.exit(1)
     try:
         with open(budget_path, "rb") as fh:
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
-        print(f"Error: malformed budget file {budget_source}: {exc}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] malformed budget file {budget_source}: {exc}")
         sys.exit(1)
 
     return {
@@ -434,13 +490,13 @@ def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) 
     Recursively fetches child sitemaps from index files up to MAX_SITEMAP_DEPTH.
     """
     if _depth >= MAX_SITEMAP_DEPTH:
-        print(f"Warning: max sitemap depth ({MAX_SITEMAP_DEPTH}) reached, stopping recursion", file=sys.stderr)
+        err_console.print(f"[yellow]Warning:[/yellow] max sitemap depth ({MAX_SITEMAP_DEPTH}) reached, stopping recursion")
         return []
 
     try:
         root = ET.fromstring(xml_content)
     except ET.ParseError as exc:
-        print(f"Warning: malformed sitemap XML: {exc}", file=sys.stderr)
+        err_console.print(f"[yellow]Warning:[/yellow] malformed sitemap XML: {exc}")
         return []
 
     # Strip namespace from tag for easier comparison
@@ -458,13 +514,13 @@ def parse_sitemap_xml(xml_content: str, verbose: bool = False, _depth: int = 0) 
             if not child_url:
                 continue
             if verbose:
-                print(f"  Following child sitemap: {child_url}", file=sys.stderr)
+                err_console.print(f"  Following child sitemap: {child_url}")
             try:
                 child_content = _fetch_sitemap_content(child_url)
                 child_urls = parse_sitemap_xml(child_content, verbose, _depth + 1)
                 urls.extend(child_urls)
             except (requests.RequestException, OSError) as exc:
-                print(f"Warning: failed to fetch child sitemap {child_url}: {exc}", file=sys.stderr)
+                err_console.print(f"[yellow]Warning:[/yellow] failed to fetch child sitemap {child_url}: {exc}")
     else:
         # Assume <urlset>
         loc_elements = root.findall("sm:url/sm:loc", SITEMAP_NS)
@@ -494,30 +550,30 @@ def fetch_sitemap_urls(
     """
     try:
         if verbose:
-            print(f"  Fetching sitemap: {source}", file=sys.stderr)
+            err_console.print(f"  Fetching sitemap: {source}")
         xml_content = _fetch_sitemap_content(source)
         urls = parse_sitemap_xml(xml_content, verbose)
     except (requests.RequestException, OSError) as exc:
-        print(f"Warning: failed to fetch sitemap {source}: {exc}", file=sys.stderr)
+        err_console.print(f"[yellow]Warning:[/yellow] failed to fetch sitemap {source}: {exc}")
         return []
 
     if verbose:
-        print(f"  Found {len(urls)} URL(s) in sitemap", file=sys.stderr)
+        err_console.print(f"  Found {len(urls)} URL(s) in sitemap")
 
     if filter_pattern:
         try:
             pattern = re.compile(filter_pattern)
         except re.error as exc:
-            print(f"Error: invalid sitemap filter regex '{filter_pattern}': {exc}", file=sys.stderr)
+            err_console.print(f"[bold red]Error:[/bold red] invalid sitemap filter regex '{filter_pattern}': {exc}")
             return []
         urls = [u for u in urls if pattern.search(u)]
         if verbose:
-            print(f"  {len(urls)} URL(s) after filter '{filter_pattern}'", file=sys.stderr)
+            err_console.print(f"  {len(urls)} URL(s) after filter '{filter_pattern}'")
 
     if limit is not None and limit > 0:
         urls = urls[:limit]
         if verbose:
-            print(f"  Limited to {len(urls)} URL(s)", file=sys.stderr)
+            err_console.print(f"  Limited to {len(urls)} URL(s)")
 
     return urls
 
@@ -539,7 +595,7 @@ def load_urls(
     elif file_path:
         path = Path(file_path)
         if not path.is_file():
-            print(f"Error: URL file not found: {file_path}", file=sys.stderr)
+            err_console.print(f"[bold red]Error:[/bold red] URL file not found: {file_path}")
             sys.exit(1)
         raw_urls.extend(path.read_text().splitlines())
     elif allow_stdin and not sys.stdin.isatty():
@@ -563,10 +619,10 @@ def load_urls(
                 seen.add(cleaned)
                 validated.append(cleaned)
         elif raw.strip() and not raw.strip().startswith("#"):
-            print(f"Warning: skipping invalid URL: {raw.strip()}", file=sys.stderr)
+            err_console.print(f"[yellow]Warning:[/yellow] skipping invalid URL: {raw.strip()}")
 
     if not validated:
-        print("Error: no valid URLs provided.", file=sys.stderr)
+        err_console.print("[bold red]Error:[/bold red] no valid URLs provided.")
         sys.exit(1)
 
     return validated
@@ -644,6 +700,10 @@ def fetch_pagespeed_result(
                     f"HTTP {response.status_code} for {url} ({strategy})"
                 )
                 if attempt < MAX_RETRIES:
+                    err_console.print(
+                        f"  [yellow]⚠[/yellow] HTTP {response.status_code} — retrying in {wait_time:.1f}s "
+                        f"(attempt {attempt + 1}/{MAX_RETRIES})..."
+                    )
                     time.sleep(wait_time)
                     continue
 
@@ -661,7 +721,12 @@ def fetch_pagespeed_result(
         except requests.RequestException as exc:
             last_error = exc
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BASE_DELAY * (2**attempt))
+                wait_time = RETRY_BASE_DELAY * (2**attempt)
+                err_console.print(
+                    f"  [yellow]⚠[/yellow] Request error: {exc} — retrying in {wait_time:.1f}s "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES})..."
+                )
+                time.sleep(wait_time)
                 continue
 
     raise PageSpeedError(f"Failed after {MAX_RETRIES + 1} attempts for {url} ({strategy}): {last_error}")
@@ -748,13 +813,23 @@ def process_urls(
     task_list = base_tasks * runs
     total_tasks = len(task_list)
     base_count = len(base_tasks)
-    completed_count = 0
-    lock = threading.Lock()
     semaphore = threading.Semaphore(1)  # rate limiter
     last_request_time = [0.0]  # mutable for closure
+    results_lock = threading.Lock()  # protects results list append only
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=err_console,
+        transient=True,
+    )
+    prog_task = progress.add_task("Fetching...", total=total_tasks)
 
     def process_single(url: str, strategy: str, task_index: int) -> dict:
-        nonlocal completed_count
         # Rate limiting
         with semaphore:
             now = time.monotonic()
@@ -763,10 +838,15 @@ def process_urls(
                 time.sleep(delay - elapsed)
             last_request_time[0] = time.monotonic()
 
+        short_url = url if len(url) <= 50 else url[:47] + "..."
+        run_label = f" run {task_index // base_count + 1}/{runs}" if runs > 1 else ""
+        progress.update(prog_task, description=f"[cyan]{short_url}[/cyan] ({strategy}){run_label}")
+
+        if verbose:
+            v_run_label = f" [run {task_index // base_count + 1}/{runs}]" if runs > 1 else ""
+            err_console.print(f"  [dim]Fetching[/dim] [cyan]{url}[/cyan] ({strategy}){v_run_label}...")
+
         try:
-            if verbose:
-                run_label = f" [run {task_index // base_count + 1}/{runs}]" if runs > 1 else ""
-                print(f"  Fetching {url} ({strategy}){run_label}...", file=sys.stderr)
             response = fetch_pagespeed_result(url, strategy, api_key, categories)
             metrics = extract_metrics(response, url, strategy)
         except PageSpeedError as exc:
@@ -775,46 +855,26 @@ def process_urls(
                 "strategy": strategy,
                 "error": str(exc),
             }
-            print(f"  Error: {exc}", file=sys.stderr)
+            err_console.print(f"  [bold red]Error:[/bold red] {exc}")
 
-        with lock:
-            completed_count += 1
-            if runs > 1:
-                current_run = (completed_count - 1) // base_count + 1
-                print(
-                    f"\r  Progress: {completed_count}/{total_tasks} (run {current_run}/{runs})",
-                    end="",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            else:
-                print(
-                    f"\r  Progress: {completed_count}/{total_tasks}",
-                    end="",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
+        progress.advance(prog_task)
         return metrics
 
-    effective_workers = min(workers, total_tasks)
-    if effective_workers <= 1:
-        # Sequential processing
-        for task_index, (url, strategy) in enumerate(task_list):
-            result = process_single(url, strategy, task_index)
-            results.append(result)
-    else:
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            futures = {}
+    with progress:
+        effective_workers = min(workers, total_tasks)
+        if effective_workers <= 1:
             for task_index, (url, strategy) in enumerate(task_list):
-                future = executor.submit(process_single, url, strategy, task_index)
-                futures[future] = (url, strategy)
+                results.append(process_single(url, strategy, task_index))
+        else:
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                futures = {
+                    executor.submit(process_single, url, strategy, task_index): (url, strategy)
+                    for task_index, (url, strategy) in enumerate(task_list)
+                }
+                for future in as_completed(futures):
+                    with results_lock:
+                        results.append(future.result())
 
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-
-    print("", file=sys.stderr)  # newline after progress
     raw_dataframe = pd.DataFrame(results)
     return aggregate_multi_run(raw_dataframe, runs)
 
@@ -933,32 +993,39 @@ def _write_data_files(
             json_path = generate_output_path(output_dir, strategy_label, "json")
         written_files.append(output_json(dataframe, json_path))
 
-    print(f"\nResults written to:", file=sys.stderr)
+    err_console.print("")
     for filepath in written_files:
-        print(f"  {filepath}", file=sys.stderr)
+        err_console.print(f"  [green]✓[/green] [cyan]{filepath}[/cyan]")
 
     return written_files
 
 
 def _print_audit_summary(dataframe: pd.DataFrame) -> None:
     """Print average/min/max scores and error count to stderr."""
-    if "performance_score" in dataframe.columns:
-        scores = dataframe["performance_score"].dropna()
-        if len(scores) > 0:
-            print(f"\nSummary:", file=sys.stderr)
-            print(f"  URLs analyzed: {len(dataframe['url'].unique())}", file=sys.stderr)
-            print(f"  Avg score:     {scores.mean():.0f}", file=sys.stderr)
-            print(f"  Min score:     {scores.min():.0f}", file=sys.stderr)
-            print(f"  Max score:     {scores.max():.0f}", file=sys.stderr)
+    if "performance_score" not in dataframe.columns:
+        return
+    scores = dataframe["performance_score"].dropna()
+    if len(scores) == 0:
+        return
+
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+    t.add_column("Label", style="dim")
+    t.add_column("Value")
+    t.add_row("URLs analyzed", str(len(dataframe["url"].unique())))
+    t.add_row("Avg score", _score_text(round(scores.mean())))
+    t.add_row("Min score", _score_text(int(scores.min())))
+    t.add_row("Max score", _score_text(int(scores.max())))
 
     errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
     if len(errors) > 0:
-        print(f"  Errors:        {len(errors)}", file=sys.stderr)
+        t.add_row("Errors", Text(str(len(errors)), style="bold red"))
 
     if "runs_completed" in dataframe.columns:
         max_runs = dataframe["runs_completed"].max()
         if max_runs > 1:
-            print(f"  Runs/URL:      {max_runs} (median scoring)", file=sys.stderr)
+            t.add_row("Runs/URL", Text(f"{max_runs} (median scoring)", style="dim"))
+
+    err_console.print(Panel(t, title="Summary", border_style="blue"))
 
 
 def evaluate_budget(dataframe: pd.DataFrame, budget: dict) -> dict:
@@ -989,7 +1056,7 @@ def evaluate_budget(dataframe: pd.DataFrame, budget: dict) -> dict:
         }
 
     if not thresholds:
-        print("Warning: budget has no thresholds defined — all URLs pass by default", file=sys.stderr)
+        err_console.print("[yellow]Warning:[/yellow] budget has no thresholds defined — all URLs pass by default")
 
     results = []
     passed_count = 0
@@ -1114,7 +1181,7 @@ def send_budget_webhook(webhook_url: str, verdict: dict) -> None:
         response = requests.post(webhook_url, json=verdict, timeout=30)
         response.raise_for_status()
     except (requests.RequestException, OSError) as exc:
-        print(f"Warning: webhook delivery failed: {exc}", file=sys.stderr)
+        err_console.print(f"[yellow]Warning:[/yellow] webhook delivery failed: {exc}")
 
 
 def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
@@ -1123,7 +1190,7 @@ def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
     verdict = evaluate_budget(dataframe, budget)
 
     if verdict["verdict"] == "error":
-        print("Error: all URLs errored — cannot evaluate budget", file=sys.stderr)
+        err_console.print("[bold red]Error:[/bold red] all URLs errored — cannot evaluate budget")
         return 1
 
     # Pick output format: explicit flag > GitHub Actions auto-detect > text
@@ -1138,7 +1205,7 @@ def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> int:
         "github": format_budget_github,
     }
     formatter = formatters.get(budget_format, format_budget_text)
-    print(formatter(verdict), file=sys.stderr)
+    err_console.print(formatter(verdict))
 
     # Webhook
     webhook_url = getattr(args, "webhook", None)
@@ -1227,35 +1294,36 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
     return str(output_path)
 
 
-def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = False) -> str:
-    """Format metrics as an aligned terminal table."""
+def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = False) -> Group:
+    """Format metrics as rich Panels (one per result), grouped for console output."""
     if isinstance(metrics, dict):
         metrics_list = [metrics]
     else:
         metrics_list = metrics
 
-    lines = []
+    panels = []
     for row_data in metrics_list:
         url = row_data.get("url", "?")
         strategy = row_data.get("strategy", "?")
         error = row_data.get("error")
 
-        lines.append(f"\n{'=' * 60}")
-        lines.append(f"  URL:      {url}")
-        lines.append(f"  Strategy: {strategy}")
+        panel_title = f"[bold cyan]{url}[/bold cyan]  [dim]{strategy}[/dim]"
 
         if error:
-            lines.append(f"  Error:    {error}")
-            lines.append(f"{'=' * 60}")
+            error_text = Text(str(error), style="bold red")
+            panels.append(Panel(error_text, title=panel_title, border_style="red"))
             continue
 
-        lines.append(f"{'=' * 60}")
+        score = row_data.get("performance_score")
+        border_color = _score_color(score)
+
+        t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), expand=False)
+        t.add_column("Label", style="dim", no_wrap=True)
+        t.add_column("Value")
 
         # Performance score
-        score = row_data.get("performance_score")
         if score is not None:
-            score_indicator = "GOOD" if score >= 90 else ("NEEDS WORK" if score >= 50 else "POOR")
-            lines.append(f"  Performance Score: {score}/100 ({score_indicator})")
+            t.add_row("Performance Score", _score_text(score))
 
         # Run metadata
         if show_run_metadata:
@@ -1268,54 +1336,59 @@ def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = 
                     parts.append(f"range: {score_range}")
                 if score_stddev is not None:
                     parts.append(f"stddev: {score_stddev}")
-                lines.append(f"  {', '.join(parts)}")
-
-        lines.append("")
+                t.add_row("", Text(", ".join(parts), style="dim"))
 
         # Additional category scores
-        for label, key in [("Accessibility", "accessibility_score"), ("Best Practices", "best_practices_score"), ("SEO", "seo_score")]:
+        for label, key in [
+            ("Accessibility", "accessibility_score"),
+            ("Best Practices", "best_practices_score"),
+            ("SEO", "seo_score"),
+        ]:
             val = row_data.get(key)
             if val is not None:
-                lines.append(f"  {label}: {val}/100")
+                t.add_row(label, _score_text(val))
 
-        # Lab metrics
-        lines.append("  --- Lab Data ---")
+        # Lab metrics section header
+        t.add_row("[bold]Lab Data[/bold]", "")
         lab_display = [
-            ("  First Contentful Paint", "lab_fcp_ms", "ms"),
-            ("  Largest Contentful Paint", "lab_lcp_ms", "ms"),
-            ("  Cumulative Layout Shift", "lab_cls", ""),
-            ("  Speed Index", "lab_speed_index_ms", "ms"),
-            ("  Total Blocking Time", "lab_tbt_ms", "ms"),
-            ("  Time to Interactive", "lab_tti_ms", "ms"),
+            ("First Contentful Paint", "lab_fcp_ms", "ms"),
+            ("Largest Contentful Paint", "lab_lcp_ms", "ms"),
+            ("Cumulative Layout Shift", "lab_cls", ""),
+            ("Speed Index", "lab_speed_index_ms", "ms"),
+            ("Total Blocking Time", "lab_tbt_ms", "ms"),
+            ("Time to Interactive", "lab_tti_ms", "ms"),
         ]
         for label, key, unit in lab_display:
             val = row_data.get(key)
             if val is not None:
                 suffix = f" {unit}" if unit else ""
-                lines.append(f"  {label:.<36} {val}{suffix}")
+                t.add_row(label, f"{val}{suffix}")
 
-        # Field metrics
+        # Field metrics section header + rows
         has_field = any(row_data.get(vc) is not None for _, vc, _ in FIELD_METRICS)
         if has_field:
-            lines.append("")
-            lines.append("  --- Field Data (CrUX) ---")
+            t.add_row("[bold]Field Data (CrUX)[/bold]", "")
             field_display = [
-                ("  FCP", "field_fcp_ms", "field_fcp_category", "ms"),
-                ("  LCP", "field_lcp_ms", "field_lcp_category", "ms"),
-                ("  CLS", "field_cls", "field_cls_category", ""),
-                ("  INP", "field_inp_ms", "field_inp_category", "ms"),
-                ("  FID", "field_fid_ms", "field_fid_category", "ms"),
-                ("  TTFB", "field_ttfb_ms", "field_ttfb_category", "ms"),
+                ("FCP", "field_fcp_ms", "field_fcp_category", "ms"),
+                ("LCP", "field_lcp_ms", "field_lcp_category", "ms"),
+                ("CLS", "field_cls", "field_cls_category", ""),
+                ("INP", "field_inp_ms", "field_inp_category", "ms"),
+                ("FID", "field_fid_ms", "field_fid_category", "ms"),
+                ("TTFB", "field_ttfb_ms", "field_ttfb_category", "ms"),
             ]
             for label, val_key, cat_key, unit in field_display:
                 val = row_data.get(val_key)
                 cat = row_data.get(cat_key)
                 if val is not None:
                     suffix = f" {unit}" if unit else ""
-                    cat_str = f" [{cat}]" if cat else ""
-                    lines.append(f"  {label:.<36} {val}{suffix}{cat_str}")
+                    cat_style = _field_cat_color(cat)
+                    cat_str = Text(f" [{cat}]", style=cat_style) if cat else Text("")
+                    value_text = Text(f"{val}{suffix}") + cat_str
+                    t.add_row(label, value_text)
 
-    return "\n".join(lines)
+        panels.append(Panel(t, title=panel_title, border_style=border_color))
+
+    return Group(*panels)
 
 
 # ---------------------------------------------------------------------------
@@ -1327,7 +1400,7 @@ def load_report(file_path: str) -> pd.DataFrame:
     """Load a report from CSV or JSON into a DataFrame."""
     path = Path(file_path)
     if not path.is_file():
-        print(f"Error: report file not found: {file_path}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] report file not found: {file_path}")
         sys.exit(1)
 
     suffix = path.suffix.lower()
@@ -1359,7 +1432,7 @@ def load_report(file_path: str) -> pd.DataFrame:
         else:
             return pd.DataFrame(data)
     else:
-        print(f"Error: unsupported file format '{suffix}'. Use .csv or .json.", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] unsupported file format '{suffix}'. Use .csv or .json.")
         sys.exit(1)
 
 
@@ -1372,14 +1445,14 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
     """Run a quick single-URL spot check and print results to stdout."""
     url = validate_url(args.url)
     if not url:
-        print(f"Error: invalid URL: {args.url}", file=sys.stderr)
+        err_console.print(f"[bold red]Error:[/bold red] invalid URL: {args.url}")
         sys.exit(1)
 
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     runs = getattr(args, "runs", 1)
     if runs < 1:
-        print("Error: --runs must be at least 1", file=sys.stderr)
+        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
         sys.exit(1)
 
     results = []
@@ -1387,13 +1460,16 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         run_metrics = []
         for run_number in range(1, runs + 1):
             run_label = f" [run {run_number}/{runs}]" if runs > 1 else ""
-            print(f"Fetching {url} ({strategy}){run_label}...", file=sys.stderr)
-            try:
-                response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
-                metrics = extract_metrics(response, url, strategy)
-                run_metrics.append(metrics)
-            except PageSpeedError as exc:
-                run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
+            with err_console.status(
+                f"Fetching [cyan]{url}[/cyan] ({strategy}){run_label}...",
+                spinner="dots",
+            ):
+                try:
+                    response = fetch_pagespeed_result(url, strategy, args.api_key, categories)
+                    metrics = extract_metrics(response, url, strategy)
+                    run_metrics.append(metrics)
+                except PageSpeedError as exc:
+                    run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
         if runs > 1:
             run_df = pd.DataFrame(run_metrics)
             aggregated_df = aggregate_multi_run(run_df, runs)
@@ -1401,7 +1477,7 @@ def cmd_quick_check(args: argparse.Namespace) -> None:
         else:
             results.append(run_metrics[0])
 
-    print(format_terminal_table(results, show_run_metadata=(runs > 1)))
+    out_console.print(format_terminal_table(results, show_run_metadata=(runs > 1)))
 
 
 # ---------------------------------------------------------------------------
@@ -1423,11 +1499,13 @@ def cmd_audit(args: argparse.Namespace) -> None:
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     runs = getattr(args, "runs", 1)
     if runs < 1:
-        print("Error: --runs must be at least 1", file=sys.stderr)
+        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
         sys.exit(1)
 
     runs_label = f" x {runs} runs" if runs > 1 else ""
-    print(f"Auditing {len(urls)} URL(s) with strategy: {args.strategy}{runs_label}", file=sys.stderr)
+    err_console.print(
+        f"Auditing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
+    )
     dataframe = process_urls(
         urls=urls,
         api_key=args.api_key,
@@ -1877,7 +1955,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     html_content = generate_html_report(dataframe)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     html_path.write_text(html_content)
-    print(f"HTML report written to: {html_path}", file=sys.stderr)
+    err_console.print(f"  [green]✓[/green] HTML report: [cyan]{html_path}[/cyan]")
 
     if getattr(args, "open_browser", False):
         webbrowser.open(html_path.resolve().as_uri())
@@ -1927,12 +2005,14 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     runs = getattr(args, "runs", 1)
     if runs < 1:
-        print("Error: --runs must be at least 1", file=sys.stderr)
+        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
         sys.exit(1)
 
     # --- Phase 3: Analyze ---
     runs_label = f" x {runs} runs" if runs > 1 else ""
-    print(f"Pipeline: analyzing {len(urls)} URL(s) with strategy: {args.strategy}{runs_label}", file=sys.stderr)
+    err_console.print(
+        f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
+    )
     dataframe = process_urls(
         urls=urls,
         api_key=args.api_key,
@@ -1961,7 +2041,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         html_dir.mkdir(parents=True, exist_ok=True)
         html_path = html_dir / f"{timestamp}-report.html"
         html_path.write_text(html_content)
-        print(f"HTML report written to: {html_path}", file=sys.stderr)
+        err_console.print(f"  [green]✓[/green] HTML report: [cyan]{html_path}[/cyan]")
 
         if getattr(args, "open_browser", False):
             webbrowser.open(html_path.resolve().as_uri())
