@@ -70,6 +70,19 @@ See `.claude/memory/worktree-workflow.md` for the full workflow, naming conventi
 
 Optional `pagespeed.toml` discovered in CWD or `~/.config/pagespeed/config.toml`. Supports `[settings]` defaults and `[profiles.name]` named profiles applied via `--profile`.
 
+## Make Tasks
+
+A `Makefile` provides common dev tasks. Run `make` with no arguments to see available targets.
+
+- **`make test`** — run the full test suite (`uv run --with pytest pytest test_pagespeed_insights_tool.py -v`)
+- **`make build`** — clean then build sdist + wheel into `dist/`
+- **`make clean`** — remove `dist/`, `.venv/`, `__pycache__`, `.pytest_cache`, and `*.pyc` files
+- **`make install`** — install the package in editable mode via `uv pip install -e .`
+- **`make check`** — import sanity check; prints the installed version
+- **`make release`** — full release sequence: verifies you're on `main`, checks for a clean and synced working tree, pre-creates the tag, runs tests (removes the tag and aborts on failure), then pushes the tag to trigger the `publish.yml` workflow
+
+**Release workflow**: bump `__version__` in `pagespeed_insights_tool.py`, commit and push, then run `make release`. The Makefile handles tagging and gating on tests; the CI workflow handles build, PyPI publish, and GitHub Release.
+
 ## Distribution
 
 - **PyPI package**: `pagespeed` — installs a `pagespeed` console script
@@ -78,4 +91,4 @@ Optional `pagespeed.toml` discovered in CWD or `~/.config/pagespeed/config.toml`
 - **Dependency sync**: Dependencies are declared in two places — `pyproject.toml` `[project.dependencies]` and the PEP 723 `# /// script` block. Both must be kept in sync when adding/removing dependencies.
 - **Version**: Defined as `__version__` in `pagespeed_insights_tool.py`. Hatch reads it dynamically via `[tool.hatch.version]`.
 - **Build**: `uv build` produces sdist + wheel in `dist/`. Only `pagespeed_insights_tool.py` is included (controlled by `[tool.hatch.build] include`).
-- **Release process**: Bump `__version__` in `pagespeed_insights_tool.py`, commit, tag `vX.Y.Z`, push tag. The `publish.yml` workflow handles test → build → PyPI publish → GitHub Release.
+- **Release process**: Bump `__version__` in `pagespeed_insights_tool.py`, commit, push, then run `make release`. See the Make Tasks section for full details.
