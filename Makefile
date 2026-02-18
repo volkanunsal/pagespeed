@@ -15,7 +15,7 @@ help:
 	@echo "  make clean     Remove build artifacts and caches"
 	@echo "  make install   Install package in editable mode"
 	@echo "  make check     Import check + version sanity"
-	@echo "  make release   Tag v$(VERSION) and push to trigger publish workflow"
+	@echo "  make release   Verify, test, tag v$(VERSION), and push to trigger publish workflow"
 
 test:
 	uv run --with pytest pytest test_pagespeed_insights_tool.py -v
@@ -35,7 +35,14 @@ check:
 
 release:
 	@echo "Releasing v$(VERSION)..."
+	@git rev-parse --abbrev-ref HEAD | grep -qx "main" || (echo "Error: must be on main branch"; exit 1)
 	@git diff --quiet && git diff --cached --quiet || (echo "Error: uncommitted changes"; exit 1)
-	@git tag v$(VERSION)
+	@git fetch origin main --quiet
+	@git status -uno | grep -q "Your branch is up to date" || (echo "Error: branch is not in sync with origin/main — push or pull first"; exit 1)
+	@git tag v$(VERSION) 2>/dev/null || (echo "Error: tag v$(VERSION) already exists"; exit 1)
+	@echo "Running tests..."
+	@uv run --with pytest pytest test_pagespeed_insights_tool.py -v || (git tag -d v$(VERSION); echo "Error: tests failed — tag removed"; exit 1)
 	@git push origin v$(VERSION)
-	@echo "Tag v$(VERSION) pushed — publish workflow triggered"
+	@echo ""
+	@echo "Tag v$(VERSION) pushed — publish workflow triggered."
+	@echo "Monitor: gh run list --repo volkanunsal/pagespeed --limit 5"
