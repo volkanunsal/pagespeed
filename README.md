@@ -335,8 +335,31 @@ Field data comes from the Chrome User Experience Report. It may not be available
 
 Tips:
 - Use `--delay` to increase time between requests if hitting rate limits
-- Use `--workers 1` to process one URL at a time (safest for rate limits); higher values allow concurrent in-flight requests staggered by `--delay` seconds
 - The tool retries on 429 (rate limit) responses with exponential backoff
+- See [Concurrency Model](#concurrency-model) for how `--workers` and `--delay` interact
+
+## Concurrency Model
+
+The tool uses `asyncio` + `httpx` for non-blocking HTTP I/O.
+
+**How it works:**
+
+- With `--workers 1` (or effectively 1), requests run strictly sequentially — one finishes before the next starts.
+- With `--workers N > 1` (default: 4), all tasks are launched together via `asyncio.gather()`. A shared `asyncio.Semaphore(1)` ensures requests _start_ no more than once per `--delay` seconds:
+  1. Each coroutine acquires the semaphore
+  2. Sleeps the remainder of `delay` since the last request started
+  3. Records the timestamp and releases the semaphore
+  4. Makes the actual HTTP request — outside the semaphore
+
+Because the HTTP call happens after releasing the semaphore, multiple requests can be **in-flight simultaneously** even though they start `delay` seconds apart. Wall time is therefore much shorter than `n_urls × (delay + latency)`; it converges toward `n_urls × delay + avg_latency` as the number of URLs grows.
+
+**Practical rule of thumb:**
+
+| Goal | Setting |
+|------|---------|
+| Safest for rate limits | `--workers 1` (sequential) |
+| Default (balanced) | `--workers 4 --delay 1.5` |
+| Maximum throughput | `--workers 4 --delay 1.0` (watch for 429s) |
 
 ## Cron usage
 
