@@ -64,6 +64,8 @@ Every plan must include a final step to run the test suite (`uv run pytest test_
 
 ## Worktree Workflow
 
+**Every plan implementation must use a worktree. Never commit plan implementation directly to `main`.**
+
 See `.claude/memory/worktree-workflow.md` for the full workflow, naming conventions, lifecycle steps, and rules.
 
 ## Config File
