@@ -1136,6 +1136,31 @@ class TestOutputJson(unittest.TestCase):
             self.assertIn("field_fcp_ms", first["field_metrics"])
             self.assertIn("field_fcp_category", first["field_metrics"])
 
+    def test_error_row_produces_valid_json_with_nulls(self):
+        """Error rows must not emit NaN — they should produce valid JSON with null values."""
+        import math
+        rows = [
+            {"url": "https://good.com", "strategy": "mobile", "error": None, "performance_score": 88, "fetch_time": "2026-02-16T12:00:00Z"},
+            {"url": "https://bad.com", "strategy": "mobile", "error": "HTTP 400: FAILED_DOCUMENT_REQUEST", "performance_score": float("nan"), "fetch_time": float("nan")},
+        ]
+        df = pd.DataFrame(rows)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.json"
+            pst.output_json(df, output_path)
+            raw = output_path.read_text()
+            # Must parse without error — NaN in JSON would raise here
+            data = json.loads(raw)
+        results_by_url = {r["url"]: r for r in data["results"]}
+        good = results_by_url["https://good.com"]
+        bad = results_by_url["https://bad.com"]
+        # Successful row: error is null, score is present
+        self.assertIsNone(good["error"])
+        self.assertEqual(good["performance_score"], 88)
+        # Error row: score and fetch_time are null, error message is present
+        self.assertEqual(bad["error"], "HTTP 400: FAILED_DOCUMENT_REQUEST")
+        self.assertIsNone(bad["performance_score"])
+        self.assertIsNone(bad["fetch_time"])
+
 
 # ===================================================================
 # 18. TestLoadReport

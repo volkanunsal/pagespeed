@@ -1246,10 +1246,16 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
 
     results = []
     for _, row in dataframe.iterrows():
-        record = {"url": row.get("url"), "strategy": row.get("strategy"), "error": row.get("error")}
+        error_val = row.get("error")
+        record = {
+            "url": row.get("url"),
+            "strategy": row.get("strategy"),
+            "error": None if pd.isna(error_val) else error_val,
+        }
 
         # Performance score
-        record["performance_score"] = row.get("performance_score")
+        perf_score = row.get("performance_score")
+        record["performance_score"] = None if pd.isna(perf_score) else perf_score
 
         # Additional scores
         for score_key in ("accessibility_score", "best_practices_score", "seo_score"):
@@ -1274,7 +1280,8 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
         if field:
             record["field_metrics"] = field
 
-        record["fetch_time"] = row.get("fetch_time")
+        fetch_time = row.get("fetch_time")
+        record["fetch_time"] = None if pd.isna(fetch_time) else fetch_time
 
         # Multi-run metadata
         for meta_key in ("runs_completed", "score_range", "score_stddev"):
