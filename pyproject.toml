@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
-dependencies = ["requests", "pandas"]
+dependencies = ["requests", "pandas", "rich"]
 
 [project.scripts]
 pagespeed = "pagespeed_insights_tool:main"
