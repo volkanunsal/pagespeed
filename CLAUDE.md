@@ -60,6 +60,8 @@ Set via `PAGESPEED_API_KEY` env var, `--api-key` flag, or `api_key` in `pagespee
 
 Plan files are stored in `./.claude/plans/`. Use sequential, semantic filenames following the pattern `NN-plan-name.md` (e.g., `01-add-lighthouse-support.md`, `02-refactor-output-formatters.md`). Increment the number based on existing files in the directory.
 
+Every plan must include a final step to run the test suite (`uv run pytest test_pagespeed_insights_tool.py -v`) and confirm all tests pass before considering the work complete. This guards against regressions introduced by the changes.
+
 ## Worktree Workflow
 
 See `.claude/memory/worktree-workflow.md` for the full workflow, naming conventions, lifecycle steps, and rules.
