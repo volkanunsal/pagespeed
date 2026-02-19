@@ -39,7 +39,7 @@ Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in orde
 4. **API Client** — `fetch_pagespeed_result()` with retry logic (exponential backoff on 429/500/503). Single function, returns raw API JSON.
 5. **Metrics Extraction** — `extract_metrics()` walks the API response using the `LAB_METRICS`/`FIELD_METRICS` lists. Returns a flat dict per (url, strategy) pair.
 6. **Batch Processing** — `process_urls()` uses `ThreadPoolExecutor` + `threading.Semaphore(1)` for rate-limited concurrency. Supports multi-run via `--runs N`.
-6b. **Multi-Run Aggregation** — `aggregate_multi_run()` groups by (url, strategy), computes median for numeric columns, mode for categories. `MEDIAN_ELIGIBLE_COLUMNS` controls which columns get aggregated.
+   6b. **Multi-Run Aggregation** — `aggregate_multi_run()` groups by (url, strategy), computes median for numeric columns, mode for categories. `MEDIAN_ELIGIBLE_COLUMNS` controls which columns get aggregated.
 7. **Output Formatters** — `output_csv()`, `output_json()`, `generate_html_report()`. JSON wraps results in a metadata envelope.
 8. **Budget Evaluation** — `load_budget()`, `evaluate_budget()`, CI output formatters (`format_budget_text/json/github`), `send_budget_webhook()`, `_apply_budget()` orchestration. Exit code 2 on budget failure.
 9. **Subcommand Handlers** — `cmd_quick_check()`, `cmd_audit()`, `cmd_compare()`, `cmd_report()`, `cmd_run()`, `cmd_pipeline()`, `cmd_budget()`.
