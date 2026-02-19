@@ -26,6 +26,7 @@ import textwrap
 import time
 import tomllib
 import webbrowser
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -390,6 +391,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action=TrackingStoreTrueAction,
         default=False,
         help="Include the raw lighthouseResult in JSON output (ignored for CSV)",
+    )
+    audit_parser.add_argument(
+        "--stream",
+        dest="stream",
+        action=TrackingStoreTrueAction,
+        default=False,
+        help="Print results as NDJSON to stdout as they complete (skips file output)",
     )
 
     # --- compare ---
@@ -833,6 +841,7 @@ async def process_urls(
     verbose: bool = False,
     runs: int = 1,
     full: bool = False,
+    on_result: Callable[[dict], None] | None = None,
 ) -> pd.DataFrame:
     """Process multiple URLs concurrently and return a DataFrame of results."""
     results: list[dict] = []
@@ -843,6 +852,12 @@ async def process_urls(
     base_count = len(base_tasks)
     semaphore = asyncio.Semaphore(1)  # rate limiter
     last_request_time = [0.0]  # mutable for closure
+
+    # Accumulator for multi-run streaming: collects per-run rows until all runs complete
+    run_accumulator: dict[tuple, list[dict]] = {}
+    if on_result and runs > 1:
+        for key in base_tasks:
+            run_accumulator[key] = []
 
     progress = Progress(
         SpinnerColumn(),
@@ -885,6 +900,18 @@ async def process_urls(
             err_console.print(f"  [bold red]Error:[/bold red] {exc}")
 
         progress.advance(prog_task)
+
+        if on_result:
+            if runs <= 1:
+                on_result(metrics)
+            else:
+                key = (url, strategy)
+                run_accumulator[key].append(metrics)
+                if len(run_accumulator[key]) == runs:
+                    group_df = pd.DataFrame(run_accumulator[key])
+                    agg_df = aggregate_multi_run(group_df, runs)
+                    on_result(agg_df.iloc[0].to_dict())
+
         return metrics
 
     async with httpx.AsyncClient() as client:
@@ -1257,6 +1284,17 @@ async def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> in
     return 0
 
 
+def _row_to_ndjson(row: dict) -> str:
+    """Serialize a result dict to a single NDJSON line, replacing NaN with null."""
+    cleaned = {}
+    for key, value in row.items():
+        try:
+            cleaned[key] = None if pd.isna(value) else value
+        except (TypeError, ValueError):
+            cleaned[key] = value
+    return json.dumps(cleaned, default=str)
+
+
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
     """Write DataFrame to CSV. Returns the file path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1549,9 +1587,15 @@ async def cmd_audit(args: argparse.Namespace) -> None:
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     runs = getattr(args, "runs", 1)
     full = getattr(args, "full", False)
+    stream = getattr(args, "stream", False)
     if runs < 1:
         err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
         sys.exit(1)
+
+    on_result: Callable[[dict], None] | None = None
+    if stream:
+        def on_result(row: dict) -> None:
+            out_console.print(_row_to_ndjson(row))
 
     runs_label = f" x {runs} runs" if runs > 1 else ""
     err_console.print(
@@ -1567,6 +1611,7 @@ async def cmd_audit(args: argparse.Namespace) -> None:
         verbose=args.verbose,
         runs=runs,
         full=full,
+        on_result=on_result,
     )
 
     strategy_label = args.strategy if args.strategy != "both" else "both"
@@ -1576,8 +1621,9 @@ async def cmd_audit(args: argparse.Namespace) -> None:
     output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
     explicit_output = getattr(args, "output", None)
 
-    _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
-    _print_audit_summary(dataframe)
+    if not stream:
+        _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
+        _print_audit_summary(dataframe)
 
     if getattr(args, "budget", None):
         exit_code = await _apply_budget(dataframe, args)

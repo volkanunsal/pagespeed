@@ -655,6 +655,14 @@ class TestBuildArgumentParser(unittest.TestCase):
         args = self.parser.parse_args(["audit", "--full"])
         self.assertTrue(args.full)
 
+    def test_stream_flag_default_false(self):
+        args = self.parser.parse_args(["audit"])
+        self.assertFalse(args.stream)
+
+    def test_stream_flag_parses(self):
+        args = self.parser.parse_args(["audit", "--stream"])
+        self.assertTrue(args.stream)
+
 
 # ===================================================================
 # 10. TestParseSitemapXml
@@ -1036,6 +1044,84 @@ class TestProcessUrls(unittest.IsolatedAsyncioTestCase):
                 workers=4,
             )
         self.assertEqual(len(df), 4)
+
+
+# ===================================================================
+# 14b. TestAuditStream
+# ===================================================================
+
+
+class TestAuditStream(unittest.IsolatedAsyncioTestCase):
+    """Tests for on_result streaming callback in process_urls()."""
+
+    async def test_stream_calls_on_result_per_url(self):
+        """on_result callback is called once per URL/strategy in single-run mode."""
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        collected = []
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            await pst.process_urls(
+                urls=["https://a.com", "https://b.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0,
+                workers=1,
+                on_result=collected.append,
+            )
+        self.assertEqual(len(collected), 2)
+        self.assertEqual(collected[0]["url"], "https://a.com")
+        self.assertEqual(collected[1]["url"], "https://b.com")
+
+    async def test_stream_multi_run_emits_aggregated(self):
+        """With runs=2, on_result is called once per URL/strategy (aggregated)."""
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        collected = []
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
+            await pst.process_urls(
+                urls=["https://a.com"],
+                api_key=None,
+                strategies=["mobile"],
+                categories=["performance"],
+                delay=0,
+                workers=1,
+                runs=2,
+                on_result=collected.append,
+            )
+        self.assertEqual(len(collected), 1)
+        self.assertIn("runs_completed", collected[0])
+
+    async def test_stream_skips_file_output(self):
+        """_write_data_files is not called when --stream is set."""
+        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
+        args = argparse.Namespace(
+            urls=["https://example.com"],
+            file=None,
+            sitemap=None,
+            sitemap_limit=None,
+            sitemap_filter=None,
+            strategy="mobile",
+            output_format="csv",
+            output=None,
+            output_dir=None,
+            delay=0.0,
+            workers=1,
+            categories=["performance"],
+            verbose=False,
+            api_key=None,
+            runs=1,
+            full=False,
+            stream=True,
+            budget=None,
+        )
+        args._explicit_args = []
+        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
+             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0), \
+             patch("pagespeed_insights_tool._write_data_files") as mock_write, \
+             patch("pagespeed_insights_tool.out_console"):
+            await pst.cmd_audit(args)
+        mock_write.assert_not_called()
 
 
 # ===================================================================
