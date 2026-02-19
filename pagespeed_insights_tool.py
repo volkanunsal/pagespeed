@@ -67,7 +67,6 @@ DEFAULT_STRATEGY = "mobile"
 DEFAULT_OUTPUT_FORMAT = "csv"
 DEFAULT_OUTPUT_DIR = "./reports"
 DEFAULT_CATEGORIES = ["performance"]
-DEFAULT_RUNS = 1
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2.0
@@ -133,16 +132,6 @@ CWV_BUDGET_PRESET = {
     "max_cls":    CWV_THRESHOLDS["lab_cls"]["good"],
     "max_tbt_ms": CWV_THRESHOLDS["lab_tbt_ms"]["good"],
     "max_fcp_ms": CWV_THRESHOLDS["lab_fcp_ms"]["good"],
-}
-
-# Columns eligible for median aggregation across multi-run results.
-MEDIAN_ELIGIBLE_COLUMNS = {
-    "performance_score",
-    "accessibility_score",
-    "best_practices_score",
-    "seo_score",
-    *(col for _, col in LAB_METRICS),
-    *(val_col for _, val_col, _ in FIELD_METRICS),
 }
 
 
@@ -292,7 +281,6 @@ def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | No
         "budget_format": "budget_format",
         "webhook_url": "webhook",
         "webhook_on": "webhook_on",
-        "runs": "runs",
     }
 
     # Track which args were explicitly set on the CLI
@@ -364,7 +352,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     quick_check_parser.add_argument("url", help="URL to check")
     quick_check_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
     quick_check_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
-    quick_check_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- audit ---
     audit_parser = subparsers.add_parser("audit", help="Full batch analysis with report output")
@@ -384,7 +371,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     audit_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     audit_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
-    audit_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
     audit_parser.add_argument(
         "--full",
         dest="full",
@@ -431,7 +417,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     run_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     run_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
-    run_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- pipeline ---
     pipeline_parser = subparsers.add_parser("pipeline", help="End-to-end: fetch URLs, analyze, write data files, and generate HTML report")
@@ -453,7 +438,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--budget-format", dest="budget_format", action=TrackingAction, default="text", choices=("text", "json", "github"), help="Budget output format (default: text)")
     pipeline_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     pipeline_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
-    pipeline_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
 
     # --- budget ---
     budget_parser = subparsers.add_parser("budget", help="Evaluate existing results against a performance budget")
@@ -839,25 +823,15 @@ async def process_urls(
     delay: float,
     workers: int,
     verbose: bool = False,
-    runs: int = 1,
     full: bool = False,
     on_result: Callable[[dict], None] | None = None,
 ) -> pd.DataFrame:
     """Process multiple URLs concurrently and return a DataFrame of results."""
     results: list[dict] = []
-    # Build interleaved task list: all (url, strategy) pairs for run 1, then run 2, etc.
-    base_tasks = [(url, strategy) for url in urls for strategy in strategies]
-    task_list = base_tasks * runs
+    task_list = [(url, strategy) for url in urls for strategy in strategies]
     total_tasks = len(task_list)
-    base_count = len(base_tasks)
     semaphore = asyncio.Semaphore(1)  # rate limiter
     last_request_time = [0.0]  # mutable for closure
-
-    # Accumulator for multi-run streaming: collects per-run rows until all runs complete
-    run_accumulator: dict[tuple, list[dict]] = {}
-    if on_result and runs > 1:
-        for key in base_tasks:
-            run_accumulator[key] = []
 
     progress = Progress(
         SpinnerColumn(),
@@ -871,7 +845,7 @@ async def process_urls(
     )
     prog_task = progress.add_task("Fetching...", total=total_tasks)
 
-    async def process_single(url: str, strategy: str, task_index: int) -> dict:
+    async def process_single(url: str, strategy: str) -> dict:
         # Rate limiting
         async with semaphore:
             now = time.monotonic()
@@ -881,12 +855,10 @@ async def process_urls(
             last_request_time[0] = time.monotonic()
 
         short_url = url if len(url) <= 50 else url[:47] + "..."
-        run_label = f" run {task_index // base_count + 1}/{runs}" if runs > 1 else ""
-        progress.update(prog_task, description=f"[cyan]{short_url}[/cyan] ({strategy}){run_label}")
+        progress.update(prog_task, description=f"[cyan]{short_url}[/cyan] ({strategy})")
 
         if verbose:
-            v_run_label = f" [run {task_index // base_count + 1}/{runs}]" if runs > 1 else ""
-            err_console.print(f"  [dim]Fetching[/dim] [cyan]{url}[/cyan] ({strategy}){v_run_label}...")
+            err_console.print(f"  [dim]Fetching[/dim] [cyan]{url}[/cyan] ({strategy})...")
 
         try:
             response = await fetch_pagespeed_result(url, strategy, api_key, categories, client=client)
@@ -902,15 +874,7 @@ async def process_urls(
         progress.advance(prog_task)
 
         if on_result:
-            if runs <= 1:
-                on_result(metrics)
-            else:
-                key = (url, strategy)
-                run_accumulator[key].append(metrics)
-                if len(run_accumulator[key]) == runs:
-                    group_df = pd.DataFrame(run_accumulator[key])
-                    agg_df = aggregate_multi_run(group_df, runs)
-                    on_result(agg_df.iloc[0].to_dict())
+            on_result(metrics)
 
         return metrics
 
@@ -918,98 +882,15 @@ async def process_urls(
         with progress:
             effective_workers = min(workers, total_tasks)
             if effective_workers <= 1:
-                for task_index, (url, strategy) in enumerate(task_list):
-                    results.append(await process_single(url, strategy, task_index))
+                for url, strategy in task_list:
+                    results.append(await process_single(url, strategy))
             else:
                 results = list(await asyncio.gather(*[
-                    process_single(url, strategy, i)
-                    for i, (url, strategy) in enumerate(task_list)
+                    process_single(url, strategy)
+                    for url, strategy in task_list
                 ]))
 
-    raw_dataframe = pd.DataFrame(results)
-    return aggregate_multi_run(raw_dataframe, runs)
-
-
-def aggregate_multi_run(dataframe: pd.DataFrame, total_runs: int) -> pd.DataFrame:
-    """Aggregate multi-run results into median values per (url, strategy) pair.
-
-    For each (url, strategy) group:
-    - Numeric columns (MEDIAN_ELIGIBLE_COLUMNS): compute median
-    - Categorical field columns (field_*_category): take mode (most frequent)
-    - error: None if any run succeeded, otherwise first error message
-    - fetch_time: take the last (most recent) value
-    - Adds metadata: runs_completed, score_range, score_stddev
-    """
-    if total_runs <= 1:
-        return dataframe
-
-    group_keys = ["url", "strategy"]
-    aggregated_rows = []
-
-    for (url, strategy), group in dataframe.groupby(group_keys, sort=False):
-        successful_mask = group["error"].isna() | (group["error"] == "") if "error" in group.columns else pd.Series(True, index=group.index)
-        successful_runs = group[successful_mask]
-        runs_completed = len(successful_runs)
-
-        if runs_completed == 0:
-            error_row = group.iloc[0].to_dict()
-            error_row["runs_completed"] = 0
-            error_row["score_range"] = None
-            error_row["score_stddev"] = None
-            aggregated_rows.append(error_row)
-            continue
-
-        row = {"url": url, "strategy": strategy, "error": None}
-
-        # Median for numeric columns
-        for col in MEDIAN_ELIGIBLE_COLUMNS:
-            if col not in successful_runs.columns:
-                continue
-            values = pd.to_numeric(successful_runs[col], errors="coerce").dropna()
-            if len(values) > 0:
-                median_value = values.median()
-                if col in ("lab_cls", "field_cls"):
-                    row[col] = round(median_value, 4)
-                else:
-                    row[col] = round(median_value)
-            else:
-                row[col] = None
-
-        # Mode for categorical columns
-        for col in successful_runs.columns:
-            if not col.endswith("_category"):
-                continue
-            values = successful_runs[col].dropna()
-            if len(values) > 0:
-                row[col] = values.mode().iloc[0]
-            else:
-                row[col] = None
-
-        # fetch_time: last value
-        if "fetch_time" in successful_runs.columns:
-            row["fetch_time"] = successful_runs["fetch_time"].iloc[-1]
-
-        # _lighthouse_raw: last run's value
-        if "_lighthouse_raw" in successful_runs.columns:
-            non_null = successful_runs["_lighthouse_raw"].dropna()
-            row["_lighthouse_raw"] = non_null.iloc[-1] if not non_null.empty else None
-
-        # Run metadata
-        row["runs_completed"] = runs_completed
-        perf_scores = pd.to_numeric(successful_runs.get("performance_score", pd.Series(dtype=float)), errors="coerce").dropna()
-        if len(perf_scores) > 1:
-            row["score_range"] = round(perf_scores.max() - perf_scores.min())
-            row["score_stddev"] = round(perf_scores.std(), 1)
-        elif len(perf_scores) == 1:
-            row["score_range"] = 0
-            row["score_stddev"] = 0.0
-        else:
-            row["score_range"] = None
-            row["score_stddev"] = None
-
-        aggregated_rows.append(row)
-
-    return pd.DataFrame(aggregated_rows)
+    return pd.DataFrame(results)
 
 
 # ---------------------------------------------------------------------------
@@ -1083,11 +964,6 @@ def _print_audit_summary(dataframe: pd.DataFrame) -> None:
     errors = dataframe[dataframe["error"].notna()] if "error" in dataframe.columns else pd.DataFrame()
     if len(errors) > 0:
         t.add_row("Errors", Text(str(len(errors)), style="bold red"))
-
-    if "runs_completed" in dataframe.columns:
-        max_runs = dataframe["runs_completed"].max()
-        if max_runs > 1:
-            t.add_row("Runs/URL", Text(f"{max_runs} (median scoring)", style="dim"))
 
     err_console.print(Panel(t, title="Summary", border_style="blue"))
 
@@ -1351,11 +1227,6 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
         if "_lighthouse_raw" in row.index and pd.notna(row["_lighthouse_raw"]):
             record["lighthouseResult"] = row["_lighthouse_raw"]
 
-        # Multi-run metadata
-        for meta_key in ("runs_completed", "score_range", "score_stddev"):
-            if meta_key in row and pd.notna(row[meta_key]):
-                record[meta_key] = row[meta_key]
-
         results.append(record)
 
     output_data = {
@@ -1368,20 +1239,13 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
         "results": results,
     }
 
-    # Add runs metadata if multi-run
-    if "runs_completed" in dataframe.columns and len(dataframe) > 0:
-        max_runs = int(dataframe["runs_completed"].max())
-        if max_runs > 1:
-            output_data["metadata"]["runs_per_url"] = max_runs
-            output_data["metadata"]["aggregation"] = "median"
-
     with open(output_path, "w") as fh:
         json.dump(output_data, fh, indent=2, default=str)
 
     return str(output_path)
 
 
-def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = False) -> Group:
+def format_terminal_table(metrics: dict | list[dict]) -> Group:
     """Format metrics as rich Panels (one per result), grouped for console output."""
     if isinstance(metrics, dict):
         metrics_list = [metrics]
@@ -1411,19 +1275,6 @@ def format_terminal_table(metrics: dict | list[dict], show_run_metadata: bool = 
         # Performance score
         if score is not None:
             t.add_row("Performance Score", _score_text(score))
-
-        # Run metadata
-        if show_run_metadata:
-            runs_completed = row_data.get("runs_completed")
-            score_range = row_data.get("score_range")
-            score_stddev = row_data.get("score_stddev")
-            if runs_completed is not None and runs_completed > 1:
-                parts = [f"Median of {runs_completed} runs"]
-                if score_range is not None:
-                    parts.append(f"range: {score_range}")
-                if score_stddev is not None:
-                    parts.append(f"stddev: {score_stddev}")
-                t.add_row("", Text(", ".join(parts), style="dim"))
 
         # Additional category scores
         for label, key in [
@@ -1537,35 +1388,18 @@ async def cmd_quick_check(args: argparse.Namespace) -> None:
 
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
-    runs = getattr(args, "runs", 1)
-    if runs < 1:
-        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
-        sys.exit(1)
 
     results = []
     async with httpx.AsyncClient() as client:
         for strategy in strategies:
-            run_metrics = []
-            for run_number in range(1, runs + 1):
-                run_label = f" [run {run_number}/{runs}]" if runs > 1 else ""
-                with err_console.status(
-                    f"Fetching [cyan]{url}[/cyan] ({strategy}){run_label}...",
-                    spinner="dots",
-                ):
-                    try:
-                        response = await fetch_pagespeed_result(url, strategy, args.api_key, categories, client=client)
-                        metrics = extract_metrics(response, url, strategy)
-                        run_metrics.append(metrics)
-                    except PageSpeedError as exc:
-                        run_metrics.append({"url": url, "strategy": strategy, "error": str(exc)})
-            if runs > 1:
-                run_df = pd.DataFrame(run_metrics)
-                aggregated_df = aggregate_multi_run(run_df, runs)
-                results.append(aggregated_df.iloc[0].to_dict())
-            else:
-                results.append(run_metrics[0])
+            with err_console.status(f"Fetching [cyan]{url}[/cyan] ({strategy})...", spinner="dots"):
+                try:
+                    response = await fetch_pagespeed_result(url, strategy, args.api_key, categories, client=client)
+                    results.append(extract_metrics(response, url, strategy))
+                except PageSpeedError as exc:
+                    results.append({"url": url, "strategy": strategy, "error": str(exc)})
 
-    out_console.print(format_terminal_table(results, show_run_metadata=(runs > 1)))
+    out_console.print(format_terminal_table(results))
 
 
 # ---------------------------------------------------------------------------
@@ -1585,21 +1419,16 @@ async def cmd_audit(args: argparse.Namespace) -> None:
     )
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
-    runs = getattr(args, "runs", 1)
     full = getattr(args, "full", False)
     stream = getattr(args, "stream", False)
-    if runs < 1:
-        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
-        sys.exit(1)
 
     on_result: Callable[[dict], None] | None = None
     if stream:
         def on_result(row: dict) -> None:
             out_console.print(_row_to_ndjson(row))
 
-    runs_label = f" x {runs} runs" if runs > 1 else ""
     err_console.print(
-        f"Auditing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
+        f"Auditing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]"
     )
     dataframe = await process_urls(
         urls=urls,
@@ -1609,7 +1438,6 @@ async def cmd_audit(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         verbose=args.verbose,
-        runs=runs,
         full=full,
         on_result=on_result,
     )
@@ -1745,13 +1573,6 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
     best_score = scores.max() if len(scores) > 0 else 0
     worst_score = scores.min() if len(scores) > 0 else 0
     error_count = len(dataframe[dataframe["error"].notna()]) if "error" in dataframe.columns else 0
-
-    # Multi-run card
-    runs_card = ""
-    if "runs_completed" in dataframe.columns and len(dataframe) > 0:
-        max_runs = int(dataframe["runs_completed"].max())
-        if max_runs > 1:
-            runs_card = f'<div class="card"><div class="value">{max_runs}</div><div class="label">Runs/URL (median)</div></div>'
 
     def score_color(score):
         if pd.isna(score):
@@ -1970,7 +1791,6 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
     <div class="card"><div class="value {score_class(best_score)}">{best_score:.0f}</div><div class="label">Best Score</div></div>
     <div class="card"><div class="value {score_class(worst_score)}">{worst_score:.0f}</div><div class="label">Worst Score</div></div>
     {"<div class='card'><div class='value poor'>" + str(error_count) + "</div><div class='label'>Errors</div></div>" if error_count > 0 else ""}
-    {runs_card}
 </div>
 
 <h2>Performance Scores</h2>
@@ -2103,15 +1923,10 @@ async def cmd_pipeline(args: argparse.Namespace) -> None:
 
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
-    runs = getattr(args, "runs", 1)
-    if runs < 1:
-        err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
-        sys.exit(1)
 
     # --- Phase 3: Analyze ---
-    runs_label = f" x {runs} runs" if runs > 1 else ""
     err_console.print(
-        f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]{runs_label}"
+        f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]"
     )
     dataframe = await process_urls(
         urls=urls,
@@ -2121,7 +1936,6 @@ async def cmd_pipeline(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         verbose=args.verbose,
-        runs=runs,
     )
 
     # --- Phase 4: Write data files + print summary ---
