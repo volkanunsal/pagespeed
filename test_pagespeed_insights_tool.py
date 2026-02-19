@@ -280,6 +280,15 @@ class TestExtractMetrics(unittest.TestCase):
         result = pst.extract_metrics(no_score_response, "https://x.com", "mobile")
         self.assertIsNone(result["performance_score"])
 
+    def test_include_raw_adds_lighthouse_raw(self):
+        result = pst.extract_metrics(FULL_API_RESPONSE, "https://example.com", "mobile", include_raw=True)
+        self.assertIn("_lighthouse_raw", result)
+        self.assertEqual(result["_lighthouse_raw"], FULL_API_RESPONSE["lighthouseResult"])
+
+    def test_no_raw_by_default(self):
+        result = pst.extract_metrics(FULL_API_RESPONSE, "https://example.com", "mobile")
+        self.assertNotIn("_lighthouse_raw", result)
+
 
 # ===================================================================
 # 3. TestFormatTerminalTable
@@ -637,6 +646,14 @@ class TestBuildArgumentParser(unittest.TestCase):
         self.assertFalse(args.no_report)
         self.assertEqual(args.strategy, "mobile")
         self.assertEqual(args.output_format, "csv")
+
+    def test_audit_full_flag_default_false(self):
+        args = self.parser.parse_args(["audit"])
+        self.assertFalse(args.full)
+
+    def test_audit_full_flag_parses(self):
+        args = self.parser.parse_args(["audit", "--full"])
+        self.assertTrue(args.full)
 
 
 # ===================================================================
@@ -1090,6 +1107,18 @@ class TestOutputCsv(unittest.TestCase):
             pst.output_csv(df, output_path)
             self.assertTrue(output_path.exists())
 
+    def test_drops_lighthouse_raw_column(self):
+        df = _sample_dataframe()
+        df["_lighthouse_raw"] = [{"categories": {}}, {"categories": {}}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.csv"
+            pst.output_csv(df, output_path)
+            import csv
+            with open(output_path) as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames
+            self.assertNotIn("_lighthouse_raw", fieldnames)
+
 
 # ===================================================================
 # 17. TestOutputJson
@@ -1176,6 +1205,25 @@ class TestOutputJson(unittest.TestCase):
         self.assertEqual(bad["error"], "HTTP 400: FAILED_DOCUMENT_REQUEST")
         self.assertIsNone(bad["performance_score"])
         self.assertIsNone(bad["fetch_time"])
+
+    def test_full_includes_lighthouse_result(self):
+        df = _sample_dataframe()
+        raw_data = {"categories": {"performance": {"score": 0.92}}, "audits": {}}
+        df["_lighthouse_raw"] = [raw_data, raw_data]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.json"
+            pst.output_json(df, output_path)
+            data = json.loads(output_path.read_text())
+        self.assertIn("lighthouseResult", data["results"][0])
+        self.assertEqual(data["results"][0]["lighthouseResult"], raw_data)
+
+    def test_no_lighthouse_result_without_raw_column(self):
+        df = _sample_dataframe()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.json"
+            pst.output_json(df, output_path)
+            data = json.loads(output_path.read_text())
+        self.assertNotIn("lighthouseResult", data["results"][0])
 
 
 # ===================================================================
@@ -1282,6 +1330,31 @@ class TestLooksLikeSitemap(unittest.TestCase):
 
     def test_nonexistent_local_path_not_detected(self):
         self.assertFalse(pst._looks_like_sitemap("/tmp/nonexistent_xyzzy_42.txt"))
+
+
+# ===================================================================
+# 19b. TestAggregateMultiRun
+# ===================================================================
+
+
+class TestAggregateMultiRun(unittest.TestCase):
+    """Tests for aggregate_multi_run()."""
+
+    def test_aggregate_takes_last_lighthouse_raw(self):
+        raw_run1 = {"fetchTime": "2026-01-01T00:00:00Z", "categories": {}}
+        raw_run2 = {"fetchTime": "2026-01-01T00:00:01Z", "categories": {}}
+        rows = [
+            {"url": "https://example.com", "strategy": "mobile", "error": None,
+             "performance_score": 90, "fetch_time": "2026-01-01T00:00:00Z",
+             "_lighthouse_raw": raw_run1},
+            {"url": "https://example.com", "strategy": "mobile", "error": None,
+             "performance_score": 94, "fetch_time": "2026-01-01T00:00:01Z",
+             "_lighthouse_raw": raw_run2},
+        ]
+        df = pd.DataFrame(rows)
+        result = pst.aggregate_multi_run(df, total_runs=2)
+        self.assertIn("_lighthouse_raw", result.columns)
+        self.assertEqual(result.iloc[0]["_lighthouse_raw"], raw_run2)
 
 
 # ===================================================================
