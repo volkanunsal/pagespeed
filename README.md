@@ -205,6 +205,56 @@ Full control with every CLI flag. Same internals as `audit`.
 pagespeed run https://example.com --device desktop --categories performance accessibility --delay 2.0
 ```
 
+### `pipeline` — End-to-end analysis
+
+Resolves URLs from a sitemap (or file/inline), runs the analysis, writes CSV/JSON data files, and generates an HTML report — all in one command. Optionally evaluates a performance budget.
+
+```bash
+# From a sitemap (auto-detected from URL shape)
+pagespeed pipeline https://example.com/sitemap.xml
+
+# Limit URLs and auto-open report in browser
+pagespeed pipeline https://example.com/sitemap.xml --sitemap-limit 20 --open
+
+# Filter to a section of the sitemap, both devices
+pagespeed pipeline https://example.com/sitemap.xml --sitemap-filter "/blog/" --device both
+
+# Inline URLs
+pagespeed pipeline https://a.com https://b.com --device both
+
+# From a URL file
+pagespeed pipeline -f urls.txt --open
+
+# Data files only — skip HTML report generation
+pagespeed pipeline -f urls.txt --no-report --output-format json
+
+# Evaluate Core Web Vitals budget (exits 2 on failure)
+pagespeed pipeline https://example.com/sitemap.xml --budget cwv
+
+# Custom budget with GitHub Actions output format
+pagespeed pipeline https://example.com/sitemap.xml --budget budget.toml --budget-format github
+```
+
+**Sitemap auto-detection**: when a single positional argument looks like a sitemap (ends in `.xml`, contains `sitemap` in the path, or the file content starts with `<?xml`), it is treated as a sitemap source automatically. Pass `--sitemap` explicitly to use a sitemap alongside inline URLs.
+
+#### `pipeline` flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `source` | — | `[]` | Sitemap URL/path (auto-detected) or plain URLs |
+| `--file` | `-f` | None | File with one URL per line |
+| `--sitemap` | — | None | Explicit sitemap URL or local path |
+| `--sitemap-limit` | — | None | Max URLs to extract from sitemap |
+| `--sitemap-filter` | — | None | Regex to filter sitemap URLs |
+| `--open` | — | `False` | Auto-open HTML report in browser after completion |
+| `--no-report` | — | `False` | Skip HTML report; write data files only |
+| `--budget` | — | None | Budget file (TOML) or `cwv` preset — exits 2 on failure |
+| `--budget-format` | — | `text` | Budget output format: `text`, `json`, or `github` |
+| `--webhook` | — | None | Webhook URL for budget result notifications |
+| `--webhook-on` | — | `always` | When to send webhook: `always` or `fail` |
+
+All `audit` flags (`--device`, `--output-format`, `--output`, `--output-dir`, `--delay`, `--workers`, `--categories`) also apply.
+
 ## Configuration
 
 ### Config file: `pagespeed.toml`
@@ -275,7 +325,7 @@ Settings are merged with the following priority (highest wins):
 |------|-------|---------|-------------|
 | `urls` | — | `[]` | Positional URLs |
 | `--file` | `-f` | None | File with one URL per line |
-| `--device` | `-s` | `mobile` | `mobile`, `desktop`, or `both` |
+| `--device` | — | `mobile` | `mobile`, `desktop`, or `both` |
 | `--output-format` | — | `csv` | `csv`, `json`, or `both` |
 | `--output` | `-o` | auto-timestamped | Explicit output file path |
 | `--output-dir` | — | `./reports/` | Directory for auto-named files |
