@@ -384,6 +384,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--webhook", dest="webhook", action=TrackingAction, default=None, help="Webhook URL for budget notifications")
     audit_parser.add_argument("--webhook-on", dest="webhook_on", action=TrackingAction, default="always", choices=("always", "fail"), help="When to send webhook: always or fail only")
     audit_parser.add_argument("-n", "--runs", dest="runs", action=TrackingAction, type=int, default=DEFAULT_RUNS, help="Number of runs per URL for median scoring (default: 1)")
+    audit_parser.add_argument(
+        "--full",
+        dest="full",
+        action=TrackingStoreTrueAction,
+        default=False,
+        help="Include the raw lighthouseResult in JSON output (ignored for CSV)",
+    )
 
     # --- compare ---
     compare_parser = subparsers.add_parser("compare", help="Compare two reports and highlight regressions")
@@ -754,7 +761,7 @@ async def fetch_pagespeed_result(
 # ---------------------------------------------------------------------------
 
 
-def extract_metrics(api_response: dict, url: str, strategy: str) -> dict:
+def extract_metrics(api_response: dict, url: str, strategy: str, include_raw: bool = False) -> dict:
     """Extract lab and field metrics from a PageSpeed API response."""
     row: dict[str, object] = {
         "url": url,
@@ -805,6 +812,9 @@ def extract_metrics(api_response: dict, url: str, strategy: str) -> dict:
     fetch_time = lighthouse.get("fetchTime")
     row["fetch_time"] = fetch_time
 
+    if include_raw:
+        row["_lighthouse_raw"] = api_response.get("lighthouseResult")
+
     return row
 
 
@@ -822,6 +832,7 @@ async def process_urls(
     workers: int,
     verbose: bool = False,
     runs: int = 1,
+    full: bool = False,
 ) -> pd.DataFrame:
     """Process multiple URLs concurrently and return a DataFrame of results."""
     results: list[dict] = []
@@ -864,7 +875,7 @@ async def process_urls(
 
         try:
             response = await fetch_pagespeed_result(url, strategy, api_key, categories, client=client)
-            metrics = extract_metrics(response, url, strategy)
+            metrics = extract_metrics(response, url, strategy, include_raw=full)
         except PageSpeedError as exc:
             metrics = {
                 "url": url,
@@ -950,6 +961,11 @@ def aggregate_multi_run(dataframe: pd.DataFrame, total_runs: int) -> pd.DataFram
         # fetch_time: last value
         if "fetch_time" in successful_runs.columns:
             row["fetch_time"] = successful_runs["fetch_time"].iloc[-1]
+
+        # _lighthouse_raw: last run's value
+        if "_lighthouse_raw" in successful_runs.columns:
+            non_null = successful_runs["_lighthouse_raw"].dropna()
+            row["_lighthouse_raw"] = non_null.iloc[-1] if not non_null.empty else None
 
         # Run metadata
         row["runs_completed"] = runs_completed
@@ -1244,6 +1260,7 @@ async def _apply_budget(dataframe: pd.DataFrame, args: argparse.Namespace) -> in
 def output_csv(dataframe: pd.DataFrame, output_path: Path) -> str:
     """Write DataFrame to CSV. Returns the file path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    dataframe = dataframe.drop(columns=["_lighthouse_raw"], errors="ignore")
     dataframe.to_csv(output_path, index=False)
     return str(output_path)
 
@@ -1292,6 +1309,9 @@ def output_json(dataframe: pd.DataFrame, output_path: Path) -> str:
 
         fetch_time = row.get("fetch_time")
         record["fetch_time"] = None if pd.isna(fetch_time) else fetch_time
+
+        if "_lighthouse_raw" in row.index and pd.notna(row["_lighthouse_raw"]):
+            record["lighthouseResult"] = row["_lighthouse_raw"]
 
         # Multi-run metadata
         for meta_key in ("runs_completed", "score_range", "score_stddev"):
@@ -1528,6 +1548,7 @@ async def cmd_audit(args: argparse.Namespace) -> None:
     strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     runs = getattr(args, "runs", 1)
+    full = getattr(args, "full", False)
     if runs < 1:
         err_console.print("[bold red]Error:[/bold red] --runs must be at least 1")
         sys.exit(1)
@@ -1545,9 +1566,12 @@ async def cmd_audit(args: argparse.Namespace) -> None:
         workers=args.workers,
         verbose=args.verbose,
         runs=runs,
+        full=full,
     )
 
     strategy_label = args.strategy if args.strategy != "both" else "both"
+    if full:
+        strategy_label = f"{strategy_label}-full"
     output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
     output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
     explicit_output = getattr(args, "output", None)
