@@ -1073,25 +1073,6 @@ class TestAuditStream(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collected[0]["url"], "https://a.com")
         self.assertEqual(collected[1]["url"], "https://b.com")
 
-    async def test_stream_multi_run_emits_aggregated(self):
-        """With runs=2, on_result is called once per URL/strategy (aggregated)."""
-        mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
-        collected = []
-        with patch("pagespeed_insights_tool.fetch_pagespeed_result", mock_fetch), \
-             patch("pagespeed_insights_tool.time.monotonic", return_value=0.0):
-            await pst.process_urls(
-                urls=["https://a.com"],
-                api_key=None,
-                strategies=["mobile"],
-                categories=["performance"],
-                delay=0,
-                workers=1,
-                runs=2,
-                on_result=collected.append,
-            )
-        self.assertEqual(len(collected), 1)
-        self.assertIn("runs_completed", collected[0])
-
     async def test_stream_skips_file_output(self):
         """_write_data_files is not called when --stream is set."""
         mock_fetch = AsyncMock(return_value=FULL_API_RESPONSE)
@@ -1110,7 +1091,6 @@ class TestAuditStream(unittest.IsolatedAsyncioTestCase):
             categories=["performance"],
             verbose=False,
             api_key=None,
-            runs=1,
             full=False,
             stream=True,
             budget=None,
@@ -1416,31 +1396,6 @@ class TestLooksLikeSitemap(unittest.TestCase):
 
     def test_nonexistent_local_path_not_detected(self):
         self.assertFalse(pst._looks_like_sitemap("/tmp/nonexistent_xyzzy_42.txt"))
-
-
-# ===================================================================
-# 19b. TestAggregateMultiRun
-# ===================================================================
-
-
-class TestAggregateMultiRun(unittest.TestCase):
-    """Tests for aggregate_multi_run()."""
-
-    def test_aggregate_takes_last_lighthouse_raw(self):
-        raw_run1 = {"fetchTime": "2026-01-01T00:00:00Z", "categories": {}}
-        raw_run2 = {"fetchTime": "2026-01-01T00:00:01Z", "categories": {}}
-        rows = [
-            {"url": "https://example.com", "strategy": "mobile", "error": None,
-             "performance_score": 90, "fetch_time": "2026-01-01T00:00:00Z",
-             "_lighthouse_raw": raw_run1},
-            {"url": "https://example.com", "strategy": "mobile", "error": None,
-             "performance_score": 94, "fetch_time": "2026-01-01T00:00:01Z",
-             "_lighthouse_raw": raw_run2},
-        ]
-        df = pd.DataFrame(rows)
-        result = pst.aggregate_multi_run(df, total_runs=2)
-        self.assertIn("_lighthouse_raw", result.columns)
-        self.assertEqual(result.iloc[0]["_lighthouse_raw"], raw_run2)
 
 
 # ===================================================================
