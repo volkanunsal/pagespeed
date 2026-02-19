@@ -48,7 +48,7 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Constants
