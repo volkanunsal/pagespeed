@@ -13,7 +13,7 @@ When installed via `pip install pagespeed` or run via `uvx pagespeed`:
 ```bash
 pagespeed --help
 pagespeed quick-check https://example.com
-pagespeed audit -f urls.txt --strategy both --output-format both
+pagespeed audit -f urls.txt --device both --output-format both
 pagespeed pipeline https://example.com/sitemap.xml --sitemap-limit 20 --open
 pagespeed compare before.csv after.csv
 pagespeed report results.csv --open

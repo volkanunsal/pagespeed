@@ -455,7 +455,7 @@ class TestApplyProfile(unittest.TestCase):
             "api_key": None,
             "file": None,
             "delay": 1.5,
-            "strategy": "mobile",
+            "device": "mobile",
             "output_format": "csv",
             "output_dir": "./reports",
             "workers": 4,
@@ -474,14 +474,14 @@ class TestApplyProfile(unittest.TestCase):
         args = self._make_args()
         result = pst.apply_profile(args, {}, None)
         self.assertEqual(result.delay, 1.5)
-        self.assertEqual(result.strategy, "mobile")
+        self.assertEqual(result.device, "mobile")
 
     def test_settings_fill_unset(self):
         args = self._make_args()
-        config = {"settings": {"delay": 3.0, "strategy": "desktop"}}
+        config = {"settings": {"delay": 3.0, "device": "desktop"}}
         result = pst.apply_profile(args, config, None)
         self.assertEqual(result.delay, 3.0)
-        self.assertEqual(result.strategy, "desktop")
+        self.assertEqual(result.device, "desktop")
 
     def test_profile_overrides_settings(self):
         args = self._make_args()
@@ -603,10 +603,10 @@ class TestBuildArgumentParser(unittest.TestCase):
         self.assertEqual(args.url, "https://example.com")
 
     def test_audit_parses(self):
-        args = self.parser.parse_args(["audit", "https://a.com", "https://b.com", "-s", "both"])
+        args = self.parser.parse_args(["audit", "https://a.com", "https://b.com", "--device", "both"])
         self.assertEqual(args.command, "audit")
         self.assertEqual(args.urls, ["https://a.com", "https://b.com"])
-        self.assertEqual(args.strategy, "both")
+        self.assertEqual(args.device, "both")
 
     def test_compare_parses(self):
         args = self.parser.parse_args(["compare", "before.csv", "after.csv", "--threshold", "10"])
@@ -623,7 +623,7 @@ class TestBuildArgumentParser(unittest.TestCase):
 
     def test_default_values(self):
         args = self.parser.parse_args(["audit"])
-        self.assertEqual(args.strategy, "mobile")
+        self.assertEqual(args.device, "mobile")
         self.assertEqual(args.delay, 1.5)
         self.assertEqual(args.workers, 4)
         self.assertEqual(args.output_format, "csv")
@@ -644,7 +644,7 @@ class TestBuildArgumentParser(unittest.TestCase):
         self.assertEqual(args.source, [])
         self.assertFalse(args.open_browser)
         self.assertFalse(args.no_report)
-        self.assertEqual(args.strategy, "mobile")
+        self.assertEqual(args.device, "mobile")
         self.assertEqual(args.output_format, "csv")
 
     def test_audit_full_flag_default_false(self):
@@ -1082,7 +1082,7 @@ class TestAuditStream(unittest.IsolatedAsyncioTestCase):
             sitemap=None,
             sitemap_limit=None,
             sitemap_filter=None,
-            strategy="mobile",
+            device="mobile",
             output_format="csv",
             output=None,
             output_dir=None,
@@ -1541,7 +1541,7 @@ class TestCmdPipeline(unittest.IsolatedAsyncioTestCase):
             "sitemap": None,
             "sitemap_limit": None,
             "sitemap_filter": None,
-            "strategy": "mobile",
+            "device": "mobile",
             "output_format": "csv",
             "output": None,
             "output_dir": None,  # set per-test to tmpdir
