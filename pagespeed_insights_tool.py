@@ -57,13 +57,13 @@ __version__ = "1.6.0"
 
 PAGESPEED_API_URL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 
-VALID_STRATEGIES = ("mobile", "desktop", "both")
+VALID_DEVICES = ("mobile", "desktop", "both")
 VALID_CATEGORIES = ("performance", "accessibility", "best-practices", "seo")
 VALID_OUTPUT_FORMATS = ("csv", "json", "both")
 
 DEFAULT_DELAY = 1.5
 DEFAULT_WORKERS = 4
-DEFAULT_STRATEGY = "mobile"
+DEFAULT_DEVICE = "mobile"
 DEFAULT_OUTPUT_FORMAT = "csv"
 DEFAULT_OUTPUT_DIR = "./reports"
 DEFAULT_CATEGORIES = ["performance"]
@@ -277,6 +277,7 @@ def apply_profile(args: argparse.Namespace, config: dict, profile_name: str | No
         "sitemap": "sitemap",
         "sitemap_limit": "sitemap_limit",
         "sitemap_filter": "sitemap_filter",
+        "device": "device",
         "budget": "budget",
         "budget_format": "budget_format",
         "webhook_url": "webhook",
@@ -350,7 +351,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     # --- quick-check ---
     quick_check_parser = subparsers.add_parser("quick-check", help="Fast single-URL spot check")
     quick_check_parser.add_argument("url", help="URL to check")
-    quick_check_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    quick_check_parser.add_argument("--device", dest="device", action=TrackingAction, default=DEFAULT_DEVICE, choices=VALID_DEVICES, help="Device to simulate: mobile, desktop, or both")
     quick_check_parser.add_argument("--categories", dest="categories", action=TrackingAction, nargs="+", default=DEFAULT_CATEGORIES, choices=VALID_CATEGORIES, help="Lighthouse categories")
 
     # --- audit ---
@@ -360,7 +361,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="URL or local path to sitemap.xml")
     audit_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
     audit_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
-    audit_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    audit_parser.add_argument("--device", dest="device", action=TrackingAction, default=DEFAULT_DEVICE, choices=VALID_DEVICES, help="Device to simulate: mobile, desktop, or both")
     audit_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
     audit_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path (overrides auto-naming)")
     audit_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for auto-named output files")
@@ -406,7 +407,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="URL or local path to sitemap.xml")
     run_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
     run_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
-    run_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    run_parser.add_argument("--device", dest="device", action=TrackingAction, default=DEFAULT_DEVICE, choices=VALID_DEVICES, help="Device to simulate: mobile, desktop, or both")
     run_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
     run_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path")
     run_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for output files")
@@ -425,7 +426,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--sitemap", dest="sitemap", action=TrackingAction, default=None, help="Explicit sitemap URL/path (when positional args are plain URLs)")
     pipeline_parser.add_argument("--sitemap-limit", dest="sitemap_limit", action=TrackingAction, type=int, default=None, help="Max URLs to extract from sitemap")
     pipeline_parser.add_argument("--sitemap-filter", dest="sitemap_filter", action=TrackingAction, default=None, help="Regex to filter sitemap URLs")
-    pipeline_parser.add_argument("-s", "--strategy", dest="strategy", action=TrackingAction, default=DEFAULT_STRATEGY, choices=VALID_STRATEGIES, help="Strategy: mobile, desktop, or both")
+    pipeline_parser.add_argument("--device", dest="device", action=TrackingAction, default=DEFAULT_DEVICE, choices=VALID_DEVICES, help="Device to simulate: mobile, desktop, or both")
     pipeline_parser.add_argument("--output-format", dest="output_format", action=TrackingAction, default=DEFAULT_OUTPUT_FORMAT, choices=VALID_OUTPUT_FORMATS, help="Output format: csv, json, or both")
     pipeline_parser.add_argument("-o", "--output", dest="output", action=TrackingAction, default=None, help="Explicit output file path (overrides auto-naming)")
     pipeline_parser.add_argument("--output-dir", dest="output_dir", action=TrackingAction, default=DEFAULT_OUTPUT_DIR, help="Directory for auto-named output files")
@@ -1386,12 +1387,12 @@ async def cmd_quick_check(args: argparse.Namespace) -> None:
         err_console.print(f"[bold red]Error:[/bold red] invalid URL: {args.url}")
         sys.exit(1)
 
-    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    devices = [args.device] if args.device != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
 
     results = []
     async with httpx.AsyncClient() as client:
-        for strategy in strategies:
+        for strategy in devices:
             with err_console.status(f"Fetching [cyan]{url}[/cyan] ({strategy})...", spinner="dots"):
                 try:
                     response = await fetch_pagespeed_result(url, strategy, args.api_key, categories, client=client)
@@ -1417,7 +1418,7 @@ async def cmd_audit(args: argparse.Namespace) -> None:
         sitemap_filter=getattr(args, "sitemap_filter", None),
         verbose=getattr(args, "verbose", False),
     )
-    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    devices = [args.device] if args.device != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
     full = getattr(args, "full", False)
     stream = getattr(args, "stream", False)
@@ -1428,12 +1429,12 @@ async def cmd_audit(args: argparse.Namespace) -> None:
             out_console.print(_row_to_ndjson(row))
 
     err_console.print(
-        f"Auditing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]"
+        f"Auditing [bold]{len(urls)}[/bold] URL(s) · device: [cyan]{args.device}[/cyan]"
     )
     dataframe = await process_urls(
         urls=urls,
         api_key=args.api_key,
-        strategies=strategies,
+        strategies=devices,
         categories=categories,
         delay=args.delay,
         workers=args.workers,
@@ -1442,15 +1443,15 @@ async def cmd_audit(args: argparse.Namespace) -> None:
         on_result=on_result,
     )
 
-    strategy_label = args.strategy if args.strategy != "both" else "both"
+    device_label = args.device if args.device != "both" else "both"
     if full:
-        strategy_label = f"{strategy_label}-full"
+        device_label = f"{device_label}-full"
     output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
     output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
     explicit_output = getattr(args, "output", None)
 
     if not stream:
-        _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
+        _write_data_files(dataframe, output_format, output_dir, explicit_output, device_label)
         _print_audit_summary(dataframe)
 
     if getattr(args, "budget", None):
@@ -1921,17 +1922,17 @@ async def cmd_pipeline(args: argparse.Namespace) -> None:
         verbose=getattr(args, "verbose", False),
     )
 
-    strategies = [args.strategy] if args.strategy != "both" else ["mobile", "desktop"]
+    devices = [args.device] if args.device != "both" else ["mobile", "desktop"]
     categories = getattr(args, "categories", DEFAULT_CATEGORIES)
 
     # --- Phase 3: Analyze ---
     err_console.print(
-        f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · strategy: [cyan]{args.strategy}[/cyan]"
+        f"Pipeline: analyzing [bold]{len(urls)}[/bold] URL(s) · device: [cyan]{args.device}[/cyan]"
     )
     dataframe = await process_urls(
         urls=urls,
         api_key=args.api_key,
-        strategies=strategies,
+        strategies=devices,
         categories=categories,
         delay=args.delay,
         workers=args.workers,
@@ -1939,12 +1940,12 @@ async def cmd_pipeline(args: argparse.Namespace) -> None:
     )
 
     # --- Phase 4: Write data files + print summary ---
-    strategy_label = args.strategy if args.strategy != "both" else "both"
+    device_label = args.device if args.device != "both" else "both"
     output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
     output_dir = getattr(args, "output_dir", DEFAULT_OUTPUT_DIR)
     explicit_output = getattr(args, "output", None)
 
-    _write_data_files(dataframe, output_format, output_dir, explicit_output, strategy_label)
+    _write_data_files(dataframe, output_format, output_dir, explicit_output, device_label)
     _print_audit_summary(dataframe)
 
     # --- Phase 5: Generate HTML report ---

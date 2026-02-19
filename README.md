@@ -61,7 +61,7 @@ Prints a formatted report to the terminal. No files written.
 pagespeed quick-check https://www.google.com
 
 # Both mobile and desktop
-pagespeed quick-check https://www.google.com --strategy both
+pagespeed quick-check https://www.google.com --device both
 
 # With specific categories
 pagespeed quick-check https://www.google.com --categories performance accessibility
@@ -94,7 +94,7 @@ Analyzes multiple URLs and writes CSV/JSON reports.
 pagespeed audit -f urls.txt
 
 # Multiple strategies and output formats
-pagespeed audit -f urls.txt --strategy both --output-format both
+pagespeed audit -f urls.txt --device both --output-format both
 
 # Inline URLs with custom output path
 pagespeed audit https://a.com https://b.com -o report
@@ -202,7 +202,7 @@ The HTML report includes:
 Full control with every CLI flag. Same internals as `audit`.
 
 ```bash
-pagespeed run https://example.com --strategy desktop --categories performance accessibility --delay 2.0
+pagespeed run https://example.com --device desktop --categories performance accessibility --delay 2.0
 ```
 
 ## Configuration
@@ -220,7 +220,7 @@ You can also pass an explicit path with `--config path/to/config.toml`.
 api_key = "YOUR_API_KEY"       # or use PAGESPEED_API_KEY env var
 urls_file = "urls.txt"         # default URL file for -f
 delay = 1.5                    # seconds between API requests
-strategy = "mobile"            # mobile, desktop, or both
+device = "mobile"              # mobile, desktop, or both
 output_format = "csv"          # csv, json, or both
 output_dir = "./reports"       # directory for output files
 workers = 4                    # concurrent workers (1 = sequential)
@@ -228,23 +228,23 @@ categories = ["performance"]   # Lighthouse categories
 verbose = false
 
 [profiles.quick]
-strategy = "mobile"
+device = "mobile"
 output_format = "csv"
 categories = ["performance"]
 
 [profiles.full]
-strategy = "both"
+device = "both"
 output_format = "both"
 categories = ["performance", "accessibility", "best-practices", "seo"]
 
 [profiles.core-vitals]
-strategy = "both"
+device = "both"
 output_format = "csv"
 categories = ["performance"]
 
 [profiles.client-report]
 urls_file = "client_urls.txt"
-strategy = "both"
+device = "both"
 output_format = "both"
 output_dir = "./client-reports"
 categories = ["performance", "accessibility", "seo"]
@@ -275,7 +275,7 @@ Settings are merged with the following priority (highest wins):
 |------|-------|---------|-------------|
 | `urls` | — | `[]` | Positional URLs |
 | `--file` | `-f` | None | File with one URL per line |
-| `--strategy` | `-s` | `mobile` | `mobile`, `desktop`, or `both` |
+| `--device` | `-s` | `mobile` | `mobile`, `desktop`, or `both` |
 | `--output-format` | — | `csv` | `csv`, `json`, or `both` |
 | `--output` | `-o` | auto-timestamped | Explicit output file path |
 | `--output-dir` | — | `./reports/` | Directory for auto-named files |
