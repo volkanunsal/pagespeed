@@ -107,6 +107,15 @@ cat urls.txt | pagespeed audit
 
 # Include full Lighthouse audit data in JSON output
 pagespeed audit -f urls.txt --full --output-format json
+
+# Stream results as NDJSON to stdout as they complete
+pagespeed audit -f urls.txt --stream
+
+# Pipe streamed results into jq for real-time filtering
+pagespeed audit -f urls.txt --stream | jq '.performance_score'
+
+# Stream and filter to only failing URLs
+pagespeed audit -f urls.txt --stream | jq 'select(.performance_score < 50)'
 ```
 
 #### `--full` flag
@@ -117,6 +126,36 @@ Pass `--full` to embed the complete raw `lighthouseResult` object from the PageS
 - **CSV**: `--full` is silently ignored; the raw object is never written to CSV.
 - **File naming**: auto-named files get a `-full` suffix (e.g., `20260219T143022Z-mobile-full.json`).
 - **Multi-run**: when used with `--runs N`, the raw data from the last completed run is preserved.
+
+#### `--stream` flag
+
+Pass `--stream` to print results to stdout as **NDJSON** (one JSON object per line) as each URL/strategy completes, instead of buffering everything and writing files at the end. This lets you pipe results into `jq`, `grep`, or other tools without waiting for the full batch to finish.
+
+- **Output**: one `json.dumps` line per result written to stdout immediately on completion.
+- **File output**: skipped — no CSV/JSON files are written in stream mode.
+- **Summary**: the post-run audit summary table is suppressed (not useful when piping).
+- **Progress bar**: still shown on stderr so you can track progress while piping stdout.
+- **Budget**: still evaluated if `--budget` is set, using the complete result set.
+- **Multi-run (`--runs N`)**: emits one aggregated (median) row per URL/strategy after all N runs for that pair complete — not raw per-run rows.
+
+```bash
+# Stream all results to stdout
+pagespeed audit -f urls.txt --stream
+
+# Extract a single field from each result
+pagespeed audit -f urls.txt --stream | jq '.performance_score'
+
+# Filter to only URLs below a score threshold
+pagespeed audit -f urls.txt --stream | jq 'select(.performance_score < 50)'
+
+# Save streamed results to a file while also viewing them
+pagespeed audit -f urls.txt --stream | tee results.ndjson | jq '.url'
+
+# Combine with --runs for median-scored streaming
+pagespeed audit -f urls.txt --runs 3 --stream | jq '{url, score: .performance_score}'
+```
+
+Each NDJSON line is a flat JSON object with the same fields as a CSV row (`url`, `strategy`, `performance_score`, `lab_fcp_ms`, etc.). `null` is used where a value is not available.
 
 The URL file is one URL per line. Lines starting with `#` are comments:
 
@@ -250,6 +289,7 @@ Settings are merged with the following priority (highest wins):
 | `--workers` | `-w` | `4` | Concurrent workers |
 | `--categories` | — | `performance` | Lighthouse categories |
 | `--full` | — | `False` | Embed raw `lighthouseResult` in JSON output (ignored for CSV) |
+| `--stream` | — | `False` | Print results as NDJSON to stdout as they complete (skips file output) |
 
 ## Output Formats
 
@@ -430,7 +470,7 @@ Copy any example folder into your project and edit to taste. See [`examples/READ
 
 ## Testing
 
-The project includes a comprehensive test suite (102 tests across 18 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.
+The project includes a comprehensive test suite (169 tests across 30 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.
 
 ```bash
 # Run all tests
