@@ -29,9 +29,9 @@ uv run pagespeed_insights_tool.py quick-check https://example.com
 
 ## Architecture
 
-Everything is in `pagespeed_insights_tool.py` (~700 lines). Key sections in order:
+Everything is in `pagespeed_insights_tool.py` (~2000 lines). Key sections in order:
 
-1. **PEP 723 metadata block** (lines 1-7) — dependencies: `requests`, `pandas`
+1. **PEP 723 metadata block** (lines 1-7) — dependencies: `httpx`, `pandas`, `rich`
 2. **Constants** — `LAB_METRICS`, `FIELD_METRICS`, `CWV_THRESHOLDS` are data-driven lists that control metric extraction and HTML report rendering. Add new metrics here.
 3. **Config/Profile** — `load_config()` reads TOML, `apply_profile()` merges with CLI args. Resolution: CLI flags > profile > settings > built-in defaults. `TrackingAction` tracks which argparse flags were explicitly set.
 4. **API Client** — `fetch_pagespeed_result()` with retry logic (exponential backoff on 429/500/503). Single function, returns raw API JSON.
