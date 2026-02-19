@@ -104,7 +104,19 @@ pagespeed audit -f urls.txt --profile full
 
 # Piped input
 cat urls.txt | pagespeed audit
+
+# Include full Lighthouse audit data in JSON output
+pagespeed audit -f urls.txt --full --output-format json
 ```
+
+#### `--full` flag
+
+Pass `--full` to embed the complete raw `lighthouseResult` object from the PageSpeed API into each result in the JSON output. This includes all Lighthouse audits, opportunities, diagnostics, and metadata — useful for deep analysis or feeding into other tools.
+
+- **JSON**: each result gains a top-level `lighthouseResult` key containing the full API object.
+- **CSV**: `--full` is silently ignored; the raw object is never written to CSV.
+- **File naming**: auto-named files get a `-full` suffix (e.g., `20260219T143022Z-mobile-full.json`).
+- **Multi-run**: when used with `--runs N`, the raw data from the last completed run is preserved.
 
 The URL file is one URL per line. Lines starting with `#` are comments:
 
@@ -237,6 +249,7 @@ Settings are merged with the following priority (highest wins):
 | `--delay` | `-d` | `1.5` | Seconds between requests |
 | `--workers` | `-w` | `4` | Concurrent workers |
 | `--categories` | — | `performance` | Lighthouse categories |
+| `--full` | — | `False` | Embed raw `lighthouseResult` in JSON output (ignored for CSV) |
 
 ## Output Formats
 
@@ -294,6 +307,38 @@ Structured with metadata header:
       "performance_score": 92,
       "lab_metrics": { "lab_fcp_ms": 1200, "lab_lcp_ms": 1800, ... },
       "field_metrics": { "field_lcp_ms": 2100, "field_lcp_category": "FAST", ... },
+      "error": null
+    }
+  ]
+}
+```
+
+With `--full`, each result also includes the complete raw `lighthouseResult` from the API:
+
+```json
+{
+  "results": [
+    {
+      "url": "https://example.com",
+      "strategy": "mobile",
+      "performance_score": 92,
+      "lab_metrics": { ... },
+      "field_metrics": { ... },
+      "lighthouseResult": {
+        "audits": { ... },
+        "categories": { ... },
+        "categoryGroups": { ... },
+        "configSettings": { ... },
+        "environment": { ... },
+        "fetchTime": "...",
+        "finalUrl": "https://example.com",
+        "lighthouseVersion": "...",
+        "requestedUrl": "https://example.com",
+        "runWarnings": [],
+        "stackPacks": [],
+        "timing": { ... },
+        "i18n": { ... }
+      },
       "error": null
     }
   ]
