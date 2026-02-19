@@ -922,6 +922,22 @@ class TestFetchPagespeedResult(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, FULL_API_RESPONSE)
         self.assertEqual(len(sleep_calls), 1)
 
+    async def test_200_with_error_body_raises(self):
+        mock_client = AsyncMock()
+        error_body = {"error": {"code": 400, "message": "Requested URL is not analyzable"}}
+        mock_client.get.return_value = _make_mock_response(200, json_data=error_body)
+        with self.assertRaises(pst.PageSpeedError) as ctx:
+            await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
+        self.assertIn("Requested URL is not analyzable", str(ctx.exception))
+
+    async def test_200_missing_lighthouse_result_raises(self):
+        mock_client = AsyncMock()
+        crux_only = {"loadingExperience": {"metrics": {}}}
+        mock_client.get.return_value = _make_mock_response(200, json_data=crux_only)
+        with self.assertRaises(pst.PageSpeedError) as ctx:
+            await pst.fetch_pagespeed_result("https://example.com", "mobile", client=mock_client)
+        self.assertIn("No lighthouseResult", str(ctx.exception))
+
 
 # ===================================================================
 # 14. TestProcessUrls

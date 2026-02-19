@@ -695,7 +695,17 @@ async def fetch_pagespeed_result(
             )
 
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                if "error" in data:
+                    error_message = data["error"].get("message", "Unknown API error")
+                    raise PageSpeedError(
+                        f"API error for {url} ({strategy}): {error_message}"
+                    )
+                if "lighthouseResult" not in data:
+                    raise PageSpeedError(
+                        f"No lighthouseResult in API response for {url} ({strategy})"
+                    )
+                return data
 
             if response.status_code in RETRYABLE_STATUS_CODES:
                 retry_after = response.headers.get("Retry-After")
