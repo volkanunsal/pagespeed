@@ -4,7 +4,7 @@ Required before implementing any plan. Not required for small ad-hoc changes (ty
 
 ## Naming
 
-Worktree directories live under `/tmp/worktrees/`. Names use a 3-digit zero-padded sequential number + kebab-case description (e.g., `001-add-lighthouse-support`). The branch name matches the directory name. Determine the next number by inspecting existing branches:
+Worktree directories live under `/tmp/worktrees/<current_working_directory>`. Names use a 3-digit zero-padded sequential number + kebab-case description (e.g., `001-add-lighthouse-support`). The branch name matches the directory name. Determine the next number by inspecting existing branches:
 
 ```bash
 git branch --list '[0-9]*'
@@ -31,15 +31,15 @@ git branch --list '[0-9]*'
 3. **Create** — Create the worktree and branch from `main`:
 
    ```bash
-   mkdir -p /tmp/worktrees
-   git worktree add -b NNN-name /tmp/worktrees/NNN-name main
+   mkdir -p /tmp/worktrees/<current_working_directory>
+   git worktree add -b NNN-name /tmp/worktrees/<current_working_directory>/NNN-name main
    ```
 
 4. **Implement** — All file operations use absolute paths into the worktree. Commits go through `git -C`:
 
    ```bash
-   git -C /tmp/worktrees/NNN-name add ...
-   git -C /tmp/worktrees/NNN-name commit -m "..."
+   git -C /tmp/worktrees/<current_working_directory>/NNN-name add ...
+   git -C /tmp/worktrees/<current_working_directory>/NNN-name commit -m "..."
    ```
 
    Plans are read from the main working directory; worktrees are for implementation only.
@@ -52,7 +52,7 @@ git branch --list '[0-9]*'
 
 6. **Cleanup** — Remove the worktree and delete the branch:
    ```bash
-   git worktree remove /tmp/worktrees/NNN-name
+   git worktree remove /tmp/worktrees/<current_working_directory>/NNN-name
    git branch -d NNN-name
    ```
 
@@ -60,5 +60,5 @@ git branch --list '[0-9]*'
 
 - Never commit plan implementation directly to `main`.
 - One worktree per plan.
-- Clean up stale worktrees before creating new ones: `git worktree remove --force /tmp/worktrees/NNN-name`.
+- Clean up stale worktrees before creating new ones: `git worktree remove --force /tmp/worktrees/<current_working_directory>/NNN-name`.
 - All branches stay local — no `git push` to remote.
