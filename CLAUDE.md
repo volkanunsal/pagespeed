@@ -29,7 +29,7 @@ uv run pagespeed_insights_tool.py quick-check https://example.com
 
 ## Architecture
 
-Everything is in `pagespeed_insights_tool.py` (~2000 lines). Key sections in order:
+Everything is in `pagespeed_insights_tool.py`. Key sections in order:
 
 1. **PEP 723 metadata block** (lines 1-7) — dependencies: `httpx`, `pandas`, `rich`
 2. **Constants** — `LAB_METRICS`, `FIELD_METRICS`, `CWV_THRESHOLDS` are data-driven lists that control metric extraction and HTML report rendering. Add new metrics here.
