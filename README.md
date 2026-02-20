@@ -190,7 +190,7 @@ pagespeed report results.csv --open
 ```
 
 The HTML report includes:
-- Summary cards (total URLs, average/best/worst scores)
+- Summary cards (total URLs, average/median/best/worst scores)
 - Color-coded score table (green/orange/red)
 - Core Web Vitals pass/fail indicators
 - Bar charts comparing scores across URLs
@@ -382,7 +382,7 @@ Structured with metadata header:
     "generated_at": "2026-02-16T14:30:22+00:00",
     "total_urls": 5,
     "strategies": ["mobile", "desktop"],
-    "tool_version": "1.0.0"
+    "tool_version": "2.1.0"
   },
   "results": [
     {
@@ -514,17 +514,17 @@ Copy any example folder into your project and edit to taste. See [`examples/READ
 
 ## Testing
 
-The project includes a comprehensive test suite (169 tests across 30 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.
+The project includes a comprehensive test suite (168 tests across 30 test classes). All tests run offline — API calls, sitemap fetches, and file I/O are mocked.
 
 ```bash
 # Run all tests
-uv run test_pagespeed_insights_tool.py -v
+uv run pytest test_pagespeed_insights_tool.py -v
 
 # Run a single test class
-uv run test_pagespeed_insights_tool.py -v TestValidateUrl
+uv run pytest test_pagespeed_insights_tool.py -v -k TestValidateUrl
 
 # Run a specific test method
-uv run test_pagespeed_insights_tool.py -v TestExtractMetrics.test_full_extraction
+uv run pytest test_pagespeed_insights_tool.py -v -k test_full_extraction
 ```
 
 ## License
