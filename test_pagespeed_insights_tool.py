@@ -368,6 +368,12 @@ class TestGenerateHtmlReport(unittest.TestCase):
         # 92 and 98 are both "good"
         self.assertIn('class="score-cell good"', html)
 
+    def test_median_score_card_present(self):
+        # _sample_dataframe has scores 92 and 98 → median = 95
+        html = pst.generate_html_report(self.dataframe)
+        self.assertIn("Median Score", html)
+        self.assertIn("95", html)
+
     def test_cwv_pass_indicators(self):
         html = pst.generate_html_report(self.dataframe)
         self.assertIn("cwv-good", html)

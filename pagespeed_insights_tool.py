@@ -1571,6 +1571,7 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
     # Compute summary stats
     scores = dataframe["performance_score"].dropna() if "performance_score" in dataframe.columns else pd.Series(dtype=float)
     avg_score = scores.mean() if len(scores) > 0 else 0
+    median_score = scores.median() if len(scores) > 0 else 0
     best_score = scores.max() if len(scores) > 0 else 0
     worst_score = scores.min() if len(scores) > 0 else 0
     error_count = len(dataframe[dataframe["error"].notna()]) if "error" in dataframe.columns else 0
@@ -1789,6 +1790,7 @@ def generate_html_report(dataframe: pd.DataFrame) -> str:
 <div class="cards">
     <div class="card"><div class="value">{total_urls}</div><div class="label">URLs Analyzed</div></div>
     <div class="card"><div class="value {score_class(avg_score)}">{avg_score:.0f}</div><div class="label">Average Score</div></div>
+    <div class="card"><div class="value {score_class(median_score)}">{median_score:.0f}</div><div class="label">Median Score</div></div>
     <div class="card"><div class="value {score_class(best_score)}">{best_score:.0f}</div><div class="label">Best Score</div></div>
     <div class="card"><div class="value {score_class(worst_score)}">{worst_score:.0f}</div><div class="label">Worst Score</div></div>
     {"<div class='card'><div class='value poor'>" + str(error_count) + "</div><div class='label'>Errors</div></div>" if error_count > 0 else ""}
